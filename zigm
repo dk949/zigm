@@ -67,6 +67,14 @@ info() {
     fi
 }
 
+# An aside from a command whose stdout is an answer, printed on stderr so that
+# the answer stays parseable.
+note() {
+    if [ "$ZIGM_QUIET" -eq 0 ]; then
+        printf '%s\n' "$*" >&2
+    fi
+}
+
 debug() {
     if [ "$ZIGM_VERBOSE" -eq 1 ]; then
         printf 'zigm: debug: %s\n' "$*" >&2
@@ -93,12 +101,12 @@ commands:
   install <version>    install a zig and zls pair, 'master' for nightly
   use <version>        point 'current' at an installed version
   uninstall <version>  remove an installed version
-  list                 list installed versions
+  list                 list installed versions, starring the active one
   list-remote          list versions available upstream
   which [name]         print the path of an active binary, default 'zig'
   current              print the active version
   update               reinstall 'master' at its newest resolved version
-  clean                remove cached downloads
+  clean                remove the cache directory
 
 global options:
   -h, --help           print this help and exit
@@ -546,6 +554,103 @@ require_zls() {
 }
 
 # ---------------------------------------------------------------------------
+# Installed versions
+#
+# A version lives in `<data>/zigm/versions/<version>/`, which holds the zig and
+# zls binaries next to zig's `lib` directory, since zig finds that directory
+# relative to its own path. The active version is named by the `current`
+# symlink beside `versions`, which is what the user puts on PATH.
+# ---------------------------------------------------------------------------
+
+# is_version_name <name>
+#
+# True when a name can name a directory under the versions directory. Anything
+# holding a slash, or starting with a dot, could reach outside it or collide
+# with the dot prefixed scratch directories an install writes.
+is_version_name() {
+    case "$1" in
+        '' | .* | */*) return 1 ;;
+    esac
+}
+
+# find_versions <versions dir>
+#
+# Prints the installed versions, one per line, in whatever order the directory
+# gives. Dot prefixed entries are skipped, so a half finished install is not
+# reported as a version.
+find_versions() {
+    [ -d "$1" ] || return 1
+
+    for find_versions_path in "$1"/*; do
+        [ -d "$find_versions_path" ] || continue
+        printf '%s\n' "${find_versions_path##*/}"
+    done
+}
+
+# sort_versions
+#
+# Reads versions on stdin and prints them oldest first. The key is the three
+# numeric components, then a marker placing a `-dev` build before the release
+# it leads up to, then the dev counter. Padding every number to a fixed width
+# keeps the comparison a plain string sort.
+sort_versions() {
+    awk -F'[.]' '{
+        patch = $3
+        sub(/-.*$/, "", patch)
+        if ($0 ~ /-dev[.]/) { tag = 0; counter = $4 + 0 }
+        else { tag = 1; counter = 0 }
+        printf "%08d.%08d.%08d.%d.%08d\t%s\n", $1, $2, patch, tag, counter, $0
+    }' | LC_ALL=C sort | cut -f2
+}
+
+# find_link_version <link path>
+#
+# Prints the version a `current` style symlink points at, and fails when the
+# link is missing or dangling. `cd -P` resolves it without `readlink`, which is
+# not in every base system.
+find_link_version() {
+    [ -L "$1" ] || return 1
+
+    find_link_version_dir=$(CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P) ||
+        return 1
+
+    # The last component of the resolved path is the version, since that is
+    # how installs are named. Stripping it here keeps `basename` out of the
+    # way, whose handling of a leading `--` is not the same everywhere.
+    find_link_version_dir="${find_link_version_dir##*/}"
+    [ -n "$find_link_version_dir" ] || return 1
+
+    printf '%s\n' "$find_link_version_dir"
+}
+
+# swap_link <target dir> <link path>
+#
+# Points the link at the target, replacing whatever is there already.
+#
+# `mv` onto a symlink to a directory moves the source inside that directory
+# unless it is told not to, and the option saying so is spelled `-T` by GNU and
+# `-h` by BSD, so both are tried before falling back to an unlink and a rename.
+# The fallback is not atomic, but its window is one syscall wide and it leaves
+# the link missing rather than wrong.
+swap_link() {
+    swap_link_target=$(CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P) ||
+        return 1
+
+    swap_link_tmp="$2.new"
+    rm -f -- "$swap_link_tmp" || return 1
+    ln -s -- "$1" "$swap_link_tmp" || return 1
+
+    mv -T -- "$swap_link_tmp" "$2" 2>/dev/null ||
+        mv -h -- "$swap_link_tmp" "$2" 2>/dev/null ||
+        { rm -f -- "$2" && mv -f -- "$swap_link_tmp" "$2"; } || return 1
+
+    # An `mv` that took neither option would have moved the new link inside the
+    # old target instead of replacing it, so confirm where the link points now.
+    swap_link_now=$(CDPATH='' cd -P -- "$2" 2>/dev/null && pwd -P) || return 1
+    [ "$swap_link_now" = "$swap_link_target" ]
+}
+
+# ---------------------------------------------------------------------------
 # Commands
 #
 # Each command declares the tools it needs, so a missing dependency fails
@@ -567,18 +672,64 @@ cmd_install() {
 
 cmd_use() {
     [ "$#" -eq 1 ] || die_usage 'use takes exactly one version'
+    is_version_name "$1" || die_usage "'$1' is not a version"
     ensure_dirs
-    not_implemented use
+
+    cmd_use_dir="$ZIGM_VERSIONS_DIR/$1"
+    if [ ! -d "$cmd_use_dir" ]; then
+        # master is stored under the dev version it resolved to, so it never
+        # names a directory of its own.
+        [ "$1" != master ] ||
+            die "master is installed under its resolved version, see 'zigm list'"
+        die "zig $1 is not installed, run 'zigm install $1'"
+    fi
+
+    swap_link "$cmd_use_dir" "$ZIGM_CURRENT_LINK" ||
+        die "cannot point $ZIGM_CURRENT_LINK at $cmd_use_dir"
+
+    info "now using zig $1"
 }
 
 cmd_uninstall() {
     [ "$#" -eq 1 ] || die_usage 'uninstall takes exactly one version'
-    not_implemented uninstall
+    is_version_name "$1" || die_usage "'$1' is not a version"
+
+    cmd_uninstall_dir="$ZIGM_VERSIONS_DIR/$1"
+    [ -d "$cmd_uninstall_dir" ] || die "zig $1 is not installed"
+
+    # Drop the link first, so an interrupted removal cannot leave `current`
+    # pointing into a half deleted directory.
+    if [ "$(find_link_version "$ZIGM_CURRENT_LINK")" = "$1" ]; then
+        rm -f -- "$ZIGM_CURRENT_LINK" ||
+            die "cannot remove $ZIGM_CURRENT_LINK"
+        warn "zig $1 was active, no version is active now"
+    fi
+
+    rm -rf -- "$cmd_uninstall_dir" || die "cannot remove $cmd_uninstall_dir"
+    info "removed zig $1"
 }
 
 cmd_list() {
     [ "$#" -eq 0 ] || die_usage 'list takes no arguments'
-    not_implemented list
+
+    cmd_list_active=$(find_link_version "$ZIGM_CURRENT_LINK") ||
+        cmd_list_active=''
+    cmd_list_all=$(find_versions "$ZIGM_VERSIONS_DIR" | sort_versions)
+
+    if [ -z "$cmd_list_all" ]; then
+        note 'no versions installed'
+        return 0
+    fi
+
+    # The active version is marked with a star, so a caller that wants bare
+    # names can cut the first two columns.
+    printf '%s\n' "$cmd_list_all" | while IFS= read -r cmd_list_version; do
+        if [ "$cmd_list_version" = "$cmd_list_active" ]; then
+            printf '* %s\n' "$cmd_list_version"
+        else
+            printf '  %s\n' "$cmd_list_version"
+        fi
+    done
 }
 
 cmd_list_remote() {
@@ -590,12 +741,30 @@ cmd_list_remote() {
 
 cmd_which() {
     [ "$#" -le 1 ] || die_usage 'which takes at most one binary name'
-    not_implemented which
+    cmd_which_name=${1:-zig}
+    case "$cmd_which_name" in
+        '' | */*) die_usage "'$cmd_which_name' is not a binary name" ;;
+    esac
+
+    cmd_which_version=$(find_link_version "$ZIGM_CURRENT_LINK") ||
+        die "no version is active, run 'zigm use <version>'"
+
+    # The resolved path is printed rather than the one through `current`, since
+    # it names the version the binary belongs to.
+    cmd_which_path="$ZIGM_VERSIONS_DIR/$cmd_which_version/$cmd_which_name"
+    [ -x "$cmd_which_path" ] ||
+        die "zig $cmd_which_version has no '$cmd_which_name'"
+
+    printf '%s\n' "$cmd_which_path"
 }
 
 cmd_current() {
     [ "$#" -eq 0 ] || die_usage 'current takes no arguments'
-    not_implemented current
+
+    cmd_current_version=$(find_link_version "$ZIGM_CURRENT_LINK") ||
+        die "no version is active, run 'zigm use <version>'"
+
+    printf '%s\n' "$cmd_current_version"
 }
 
 cmd_update() {
@@ -616,7 +785,17 @@ cmd_update() {
 
 cmd_clean() {
     [ "$#" -eq 0 ] || die_usage 'clean takes no arguments'
-    not_implemented clean
+
+    # The cache holds only the download index and the tarballs, both of which
+    # are refetched on demand, so the whole directory goes.
+    [ -n "$ZIGM_CACHE_DIR" ] || die 'the cache directory is empty'
+    if [ ! -d "$ZIGM_CACHE_DIR" ]; then
+        note 'the cache is already empty'
+        return 0
+    fi
+
+    rm -rf -- "$ZIGM_CACHE_DIR" || die "cannot remove $ZIGM_CACHE_DIR"
+    info "removed $ZIGM_CACHE_DIR"
 }
 
 # ---------------------------------------------------------------------------

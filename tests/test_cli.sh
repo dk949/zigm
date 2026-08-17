@@ -42,15 +42,6 @@ test_unknown_command_is_a_usage_error() {
     assert_contains "$(zigm_run_out frobnicate)" 'unknown command' 'message'
 }
 
-test_stub_commands_report_not_implemented() {
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run list
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run current
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run clean
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run which
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run which zls
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run uninstall 0.15.1
-}
-
 test_wrong_argument_counts_are_usage_errors() {
     assert_status "$ZIGM_EX_USAGE" zigm_run install
     assert_status "$ZIGM_EX_USAGE" zigm_run install 0.15.1 extra
@@ -71,7 +62,7 @@ test_argument_count_is_checked_before_dependencies() {
 }
 
 test_double_dash_ends_the_options() {
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run -- list
+    assert_status 0 zigm_run -- list
     assert_status "$ZIGM_EX_USAGE" zigm_run -- --help
 }
 
@@ -82,8 +73,12 @@ test_verbose_prints_debug_output() {
 }
 
 test_quiet_and_verbose_are_accepted() {
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run -q list
-    assert_status "$ZIGM_EX_UNIMPLEMENTED" zigm_run --quiet --verbose list
+    assert_status 0 zigm_run -q list
+    assert_status 0 zigm_run --quiet --verbose list
+}
+
+test_quiet_silences_the_asides() {
+    assert_eq '' "$(zigm_run_out -q list)" 'quiet output'
 }
 
 test_debug_output_is_off_by_default() {
