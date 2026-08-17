@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    env:
+      # Pinned so a new release cannot turn a green branch red on its own.
+      SHELLCHECK_VERSION: v0.11.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          base="https://github.com/koalaman/shellcheck/releases/download"
+          file="shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          curl -fsSL "$base/$SHELLCHECK_VERSION/$file" | tar -xJ
+          sudo install "shellcheck-$SHELLCHECK_VERSION/shellcheck" \
+            /usr/local/bin/
+
+      - name: shellcheck
+        run: shellcheck -S style zigm tests/*.sh
+
+  test:
+    name: test (${{ matrix.shell }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # busybox and zsh are invoked in their POSIX modes by tests/run.sh.
+        include:
+          - shell: dash
+            package: dash
+          - shell: bash
+            package: bash
+          - shell: mksh
+            package: mksh
+          - shell: ksh
+            package: ksh
+          - shell: busybox
+            package: busybox-static
+          - shell: zsh
+            package: zsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.shell }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.package }}
+
+      - name: Run tests
+        run: SHELLS='${{ matrix.shell }}' tests/run.sh
+
+  test-macos:
+    name: test (macos, ${{ matrix.shell }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS ships these three, and it is the platform whose directory
+        # layout differs, so it is worth covering directly.
+        shell: [sh, bash, zsh]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: SHELLS='${{ matrix.shell }}' tests/run.sh
