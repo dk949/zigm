@@ -29,6 +29,8 @@
     - [X] Cover the normalizers, directory resolution, tool detection, and the
           command line end to end.
     - [ ] Extend the coverage as each remaining subcommand lands.
+        - [X] `tests/test_local.sh` covers the commands that only read local
+              state, end to end over fake installs made of stub executables.
 - [X] Run the tests, `shellcheck`, and a syntax check in CI.
     - [X] GitHub Actions, on push and pull request.
     - [X] Linux matrix of dash, bash, mksh, ksh, busybox ash, and zsh in sh
@@ -68,12 +70,40 @@
       resolve to an older zls or to nothing at all.
     - Options are to fail, or to install zig alone and warn.
 - [ ] Implement `install`.
-- [ ] Implement `use` via an atomic `current` symlink swap.
-- [ ] Implement `uninstall`.
-- [ ] Implement `list` and `list-remote`.
-- [ ] Implement `which` and `current`.
+    - The layout the local commands assume is `versions/<version>/`, holding
+      the zig and zls binaries beside zig's `lib` directory, since zig finds
+      that directory relative to its own path.
+    - A scratch directory used while unpacking must be dot prefixed, since
+      `list` skips those and would otherwise report a half finished install.
+- [X] Implement `use` via an atomic `current` symlink swap.
+    - [X] The swap goes through a scratch symlink beside `current`.
+    - [X] `mv` moves the scratch link inside the old target unless told not
+          to, and the option saying so is `-T` on GNU and `-h` on BSD, so both
+          are tried before falling back to an unlink and a rename.
+    - [X] The fallback loses atomicity, so the swap ends by checking where the
+          link points, which also catches an `mv` that ignored both options.
+    - [X] `use master` explains that a nightly is stored under the version it
+          resolved to.
+- [X] Implement `uninstall`.
+    - [X] Removing the active version drops the `current` link first and
+          warns, so nothing is left pointing into a half deleted directory.
+- [X] Implement `list`.
+    - [X] Versions sort oldest first, with a `-dev` build ahead of the release
+          it leads up to.
+    - [X] The active version is starred, and an empty list says so on stderr.
+- [ ] Implement `list-remote`.
+- [X] Implement `which` and `current`.
+    - [X] `which` prints the path under `versions`, not the one through
+          `current`, since that names the version the binary belongs to.
 - [ ] Implement `update`.
-- [ ] Implement `clean`.
+- [X] Implement `clean`.
+    - The whole cache directory goes, since it holds only the download index
+      and tarballs, both refetched on demand.
+- [ ] Replace the `dirname --` call in `fetch_cached`.
+    - Busybox parses its own arguments per applet, so `--` may well be read as
+      the path rather than as the end of the options.
+    - `${path%/*}` does the same job with no external command, guarding the
+      case of a path holding no slash, where it expands to the path itself.
 - [ ] Keep `shellcheck -S style zigm` clean.
 - [ ] Write README covering install and the `PATH` setup the user must do.
 - [ ] Investigate whether `sed` alone can replace `jq`, dropping the last hard
