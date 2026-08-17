@@ -1,0 +1,444 @@
+#!/bin/sh
+#
+# zigm: a Zig toolchain manager.
+#
+# Fetches matched zig and zls versions and exposes one of them on PATH via a
+# single `current` symlink. See README for the PATH setup you must do yourself.
+#
+# Portability: POSIX sh only, no bashisms.
+#
+# Testing: the script does nothing when sourced with ZIGM_LIB=1, so a test
+# harness can source it and call individual functions. Detection functions are
+# split in two layers:
+#
+#   * `find_*` and `normalize_*` print a result and return non-zero on failure,
+#     take their inputs as arguments, and touch no globals.
+#   * `require_*` wrap those, assign the ZIGM_* globals, and exit on failure.
+
+set -eu
+
+ZIGM_VERSION='0.1.0-dev'
+
+# Exit codes.
+ZIGM_EX_ERROR=1
+ZIGM_EX_USAGE=2
+ZIGM_EX_UNIMPLEMENTED=3
+
+# Verbosity, set by the global flags.
+ZIGM_VERBOSE=0
+ZIGM_QUIET=0
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+warn() {
+    printf 'zigm: warning: %s\n' "$*" >&2
+}
+
+err() {
+    printf 'zigm: error: %s\n' "$*" >&2
+}
+
+die() {
+    err "$*"
+    exit "$ZIGM_EX_ERROR"
+}
+
+die_usage() {
+    err "$*"
+    printf "try 'zigm --help'\n" >&2
+    exit "$ZIGM_EX_USAGE"
+}
+
+info() {
+    if [ "$ZIGM_QUIET" -eq 0 ]; then
+        printf '%s\n' "$*"
+    fi
+}
+
+debug() {
+    if [ "$ZIGM_VERBOSE" -eq 1 ]; then
+        printf 'zigm: debug: %s\n' "$*" >&2
+    fi
+}
+
+not_implemented() {
+    err "'$1' is not implemented yet"
+    exit "$ZIGM_EX_UNIMPLEMENTED"
+}
+
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+usage() {
+    cat <<EOF
+zigm $ZIGM_VERSION, a Zig toolchain manager.
+
+usage:
+  zigm [global options] <command> [arguments]
+
+commands:
+  install <version>    install a zig and zls pair, 'master' for nightly
+  use <version>        point 'current' at an installed version
+  uninstall <version>  remove an installed version
+  list                 list installed versions
+  list-remote          list versions available upstream
+  which [name]         print the path of an active binary, default 'zig'
+  current              print the active version
+  update               reinstall 'master' at its newest resolved version
+  clean                remove cached downloads
+
+global options:
+  -h, --help           print this help and exit
+  -V, --version        print the zigm version and exit
+  -v, --verbose        print debug output on stderr
+  -q, --quiet          print errors and warnings only
+
+environment:
+  ZIGM_DATA_DIR        override the data directory
+  ZIGM_CACHE_DIR       override the cache directory
+  ZIGM_CONFIG_DIR      override the config directory
+
+exit codes:
+  0 success, 1 error, 2 usage error, 3 command not implemented
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Platform and directories
+# ---------------------------------------------------------------------------
+
+# normalize_os <uname -s output>
+#
+# Prints a short os name. Unknown systems are lowercased and passed through, so
+# that the failure surfaces later with the real name in the message.
+normalize_os() {
+    case "$1" in
+        Linux) printf 'linux\n' ;;
+        Darwin) printf 'macos\n' ;;
+        FreeBSD) printf 'freebsd\n' ;;
+        NetBSD) printf 'netbsd\n' ;;
+        OpenBSD) printf 'openbsd\n' ;;
+        DragonFly) printf 'dragonfly\n' ;;
+        *) printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]' ;;
+    esac
+}
+
+# normalize_arch <uname -m output>
+#
+# Prints a short arch name, passing unknown values through unchanged. Mapping
+# to a Zig release target triple is a separate step, done at download time.
+normalize_arch() {
+    case "$1" in
+        x86_64 | amd64) printf 'x86_64\n' ;;
+        aarch64 | arm64) printf 'aarch64\n' ;;
+        armv7 | armv7l) printf 'armv7a\n' ;;
+        i386 | i486 | i586 | i686) printf 'x86\n' ;;
+        riscv64) printf 'riscv64\n' ;;
+        ppc64le) printf 'powerpc64le\n' ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# base_dir <kind> <os> <home>
+#
+# Prints the zigm directory for `kind`, one of data, cache, or config. The os
+# and home are arguments rather than globals so tests can ask for any platform.
+base_dir() {
+    base_dir_kind="$1"
+    base_dir_os="$2"
+    base_dir_home="$3"
+
+    if [ -z "$base_dir_home" ]; then
+        return 1
+    fi
+
+    if [ "$base_dir_os" = macos ]; then
+        case "$base_dir_kind" in
+            data | config)
+                printf '%s/Library/Application Support/zigm\n' "$base_dir_home"
+                ;;
+            cache) printf '%s/Library/Caches/zigm\n' "$base_dir_home" ;;
+            *) return 1 ;;
+        esac
+        return 0
+    fi
+
+    # Everything else follows the XDG base directory spec.
+    case "$base_dir_kind" in
+        data) printf '%s/zigm\n' "${XDG_DATA_HOME:-$base_dir_home/.local/share}" ;;
+        cache) printf '%s/zigm\n' "${XDG_CACHE_HOME:-$base_dir_home/.cache}" ;;
+        config) printf '%s/zigm\n' "${XDG_CONFIG_HOME:-$base_dir_home/.config}" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Sets ZIGM_OS and ZIGM_ARCH.
+require_platform() {
+    ZIGM_OS=$(normalize_os "$(uname -s)")
+    ZIGM_ARCH=$(normalize_arch "$(uname -m)")
+    debug "platform: $ZIGM_ARCH-$ZIGM_OS"
+}
+
+# Sets the directory globals. Requires ZIGM_OS, and creates nothing.
+require_dirs() {
+    if [ -z "${ZIGM_DATA_DIR:-}" ]; then
+        ZIGM_DATA_DIR=$(base_dir data "$ZIGM_OS" "${HOME:-}") ||
+            die 'cannot resolve the data directory, HOME is unset'
+    fi
+    if [ -z "${ZIGM_CACHE_DIR:-}" ]; then
+        ZIGM_CACHE_DIR=$(base_dir cache "$ZIGM_OS" "${HOME:-}") ||
+            die 'cannot resolve the cache directory, HOME is unset'
+    fi
+    if [ -z "${ZIGM_CONFIG_DIR:-}" ]; then
+        ZIGM_CONFIG_DIR=$(base_dir config "$ZIGM_OS" "${HOME:-}") ||
+            die 'cannot resolve the config directory, HOME is unset'
+    fi
+
+    ZIGM_VERSIONS_DIR="$ZIGM_DATA_DIR/versions"
+    ZIGM_CURRENT_LINK="$ZIGM_DATA_DIR/current"
+
+    debug "data dir: $ZIGM_DATA_DIR"
+    debug "cache dir: $ZIGM_CACHE_DIR"
+    debug "config dir: $ZIGM_CONFIG_DIR"
+    debug "current link: $ZIGM_CURRENT_LINK"
+}
+
+# Creates the directories zigm writes to. Requires require_dirs.
+ensure_dirs() {
+    mkdir -p "$ZIGM_VERSIONS_DIR" || die "cannot create $ZIGM_VERSIONS_DIR"
+    mkdir -p "$ZIGM_CACHE_DIR" || die "cannot create $ZIGM_CACHE_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# Tool detection
+# ---------------------------------------------------------------------------
+
+# Prints the name of an available downloader, curl preferred.
+find_downloader() {
+    if have curl; then
+        printf 'curl\n'
+    elif have wget; then
+        printf 'wget\n'
+    else
+        return 1
+    fi
+}
+
+# Prints how to decompress xz, either 'xz' for a separate binary or 'tar' when
+# tar handles it alone. A separate xz is preferred since it is unambiguous.
+find_xz() {
+    if have xz; then
+        printf 'xz\n'
+    elif have tar && tar --help 2>&1 | grep -qi -e '-J' -e 'xz'; then
+        printf 'tar\n'
+    else
+        return 1
+    fi
+}
+
+# Prints the name of an available sha256 tool.
+find_sha256() {
+    if have sha256sum; then
+        printf 'sha256sum\n'
+    elif have shasum; then
+        printf 'shasum\n'
+    elif have openssl; then
+        printf 'openssl\n'
+    elif have cksum && cksum -a sha256 </dev/null >/dev/null 2>&1; then
+        printf 'cksum\n'
+    else
+        return 1
+    fi
+}
+
+# Sets ZIGM_DOWNLOADER.
+require_downloader() {
+    ZIGM_DOWNLOADER=$(find_downloader) ||
+        die 'no downloader found, install curl or wget'
+    debug "downloader: $ZIGM_DOWNLOADER"
+}
+
+# Sets ZIGM_XZ.
+require_extractor() {
+    have tar || die 'no tar found, install tar'
+    ZIGM_XZ=$(find_xz) ||
+        die 'no xz support found, install xz or a tar built with xz support'
+    debug "xz via: $ZIGM_XZ"
+}
+
+require_jq() {
+    have jq || die 'no jq found, install jq'
+}
+
+# Sets ZIGM_SHA256, empty when nothing is available. Missing checksum tools are
+# a loud warning rather than an error, by design.
+require_sha256() {
+    if ZIGM_SHA256=$(find_sha256); then
+        debug "sha256 via: $ZIGM_SHA256"
+    else
+        ZIGM_SHA256=''
+        warn 'no sha256 tool found, downloads will not be verified'
+        warn 'install one of sha256sum, shasum, openssl, or a cksum with -a'
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+
+# fetch_stdout <url>
+#
+# Writes the response body to stdout. Requires require_downloader.
+fetch_stdout() {
+    debug "fetch: $1"
+    case "$ZIGM_DOWNLOADER" in
+        curl) curl -fsSL -- "$1" ;;
+        wget) wget -qO- -- "$1" ;;
+        *) die "unknown downloader '$ZIGM_DOWNLOADER'" ;;
+    esac
+}
+
+# fetch_file <url> <destination>
+#
+# Downloads to destination. Requires require_downloader.
+fetch_file() {
+    debug "fetch: $1 -> $2"
+    case "$ZIGM_DOWNLOADER" in
+        curl) curl -fsSL -o "$2" -- "$1" ;;
+        wget) wget -qO "$2" -- "$1" ;;
+        *) die "unknown downloader '$ZIGM_DOWNLOADER'" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+#
+# Each command declares the tools it needs, so a missing dependency fails
+# before any work happens.
+# ---------------------------------------------------------------------------
+
+cmd_install() {
+    [ "$#" -eq 1 ] || die_usage 'install takes exactly one version'
+    require_downloader
+    require_extractor
+    require_jq
+    require_sha256
+    ensure_dirs
+    not_implemented install
+}
+
+cmd_use() {
+    [ "$#" -eq 1 ] || die_usage 'use takes exactly one version'
+    ensure_dirs
+    not_implemented use
+}
+
+cmd_uninstall() {
+    [ "$#" -eq 1 ] || die_usage 'uninstall takes exactly one version'
+    not_implemented uninstall
+}
+
+cmd_list() {
+    [ "$#" -eq 0 ] || die_usage 'list takes no arguments'
+    not_implemented list
+}
+
+cmd_list_remote() {
+    [ "$#" -eq 0 ] || die_usage 'list-remote takes no arguments'
+    require_downloader
+    require_jq
+    not_implemented list-remote
+}
+
+cmd_which() {
+    [ "$#" -le 1 ] || die_usage 'which takes at most one binary name'
+    not_implemented which
+}
+
+cmd_current() {
+    [ "$#" -eq 0 ] || die_usage 'current takes no arguments'
+    not_implemented current
+}
+
+cmd_update() {
+    [ "$#" -eq 0 ] || die_usage 'update takes no arguments'
+    require_downloader
+    require_extractor
+    require_jq
+    require_sha256
+    ensure_dirs
+    not_implemented update
+}
+
+cmd_clean() {
+    [ "$#" -eq 0 ] || die_usage 'clean takes no arguments'
+    not_implemented clean
+}
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+main() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -h | --help)
+                usage
+                return 0
+                ;;
+            -V | --version)
+                printf '%s\n' "$ZIGM_VERSION"
+                return 0
+                ;;
+            -v | --verbose)
+                ZIGM_VERBOSE=1
+                shift
+                ;;
+            -q | --quiet)
+                ZIGM_QUIET=1
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                die_usage "unknown option '$1'"
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    if [ "$#" -eq 0 ]; then
+        usage >&2
+        return "$ZIGM_EX_USAGE"
+    fi
+
+    main_cmd="$1"
+    shift
+
+    require_platform
+    require_dirs
+
+    case "$main_cmd" in
+        install) cmd_install "$@" ;;
+        use) cmd_use "$@" ;;
+        uninstall) cmd_uninstall "$@" ;;
+        list) cmd_list "$@" ;;
+        list-remote) cmd_list_remote "$@" ;;
+        which) cmd_which "$@" ;;
+        current) cmd_current "$@" ;;
+        update) cmd_update "$@" ;;
+        clean) cmd_clean "$@" ;;
+        *) die_usage "unknown command '$main_cmd'" ;;
+    esac
+}
+
+if [ "${ZIGM_LIB:-0}" != 1 ]; then
+    main "$@"
+fi
