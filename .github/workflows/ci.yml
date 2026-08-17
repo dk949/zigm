@@ -16,7 +16,7 @@ jobs:
       # Pinned so a new release cannot turn a green branch red on its own.
       SHELLCHECK_VERSION: v0.11.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install shellcheck
         run: |
@@ -50,7 +50,7 @@ jobs:
           - shell: zsh
             package: zsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install ${{ matrix.shell }}
         run: |
@@ -70,7 +70,7 @@ jobs:
         # layout differs, so it is worth covering directly.
         shell: [sh, bash, zsh]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run tests
         run: SHELLS='${{ matrix.shell }}' tests/run.sh
