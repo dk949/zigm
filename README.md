@@ -167,6 +167,14 @@ zigm uninstall 0.14.1        # remove a version
   old directory aside and puts it back if the swap fails.
 * Downloads are checked against the checksum upstream publishes for them. A
   mismatch is fatal; having nothing to compare against is a warning.
+* Every command that writes, `install`, `update`, `use`, `uninstall`, and
+  `clean`, takes a lock over the data directory first, so two of them cannot
+  work on one version at once. The lock is the directory `<data>/zigm/.lock`,
+  recording the pid that took it, and a second run exits rather than waiting.
+  A lock whose owner is gone is reclaimed automatically; one left behind
+  before its owner could be recorded has to be removed by hand, which the
+  message says. The commands that only read, `list`, `list-remote`, `which`,
+  and `current`, take nothing and run at any time.
 * zig versions come from the ziglang.org download index, cached in the cache
   directory for `ZIGM_INDEX_TTL` seconds.
 * zls versions come from the zigtools version selection API, which pairs zig

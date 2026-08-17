@@ -37,6 +37,11 @@ ZIGM_INDEX_TTL=${ZIGM_INDEX_TTL:-3600}
 # Set by --refresh, ignores a cached index however fresh it is.
 ZIGM_REFRESH=0
 
+# The lock this run holds, and the version whose scratch it is assembling, both
+# read by the exit handler and empty while there is nothing to give back.
+ZIGM_LOCK_DIR=''
+ZIGM_SCRATCH_VERSION=''
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -381,6 +386,126 @@ require_dirs() {
 ensure_dirs() {
     mkdir -p "$ZIGM_VERSIONS_DIR" || die "cannot create $ZIGM_VERSIONS_DIR"
     mkdir -p "$ZIGM_CACHE_DIR" || die "cannot create $ZIGM_CACHE_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# Locking
+#
+# Two runs installing one version share a scratch directory, and a `clean`
+# alongside an install sweeps that scratch out from under it, so every command
+# that writes takes one lock over the whole data directory first. The commands
+# that only read take nothing.
+#
+# `mkdir` is the only exclusive create POSIX sh has, so the lock is a directory
+# holding the pid of the run that took it. A lock whose owner is gone is
+# reclaimed, since a kill or a power loss leaves nobody to give it back.
+# ---------------------------------------------------------------------------
+
+# find_lock_pid <lock directory>
+#
+# Prints the pid a lock records, and fails when it records none or records
+# something that is not a pid.
+find_lock_pid() {
+    [ -f "$1/pid" ] || return 1
+
+    find_lock_pid_value=$(cat -- "$1/pid" 2>/dev/null) || return 1
+    case "$find_lock_pid_value" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+
+    printf '%s\n' "$find_lock_pid_value"
+}
+
+# is_stale_lock <lock directory>
+#
+# True when the run that took the lock is gone.
+#
+# A lock recording no pid is not stale. It is either a run that has not written
+# its pid yet, a window one `printf` wide, or one that died inside that window,
+# and the two cannot be told apart, so that rare second case is left to the
+# user, whom the message points at the directory.
+#
+# `kill -0` cannot see a process of another user, but a data directory belongs
+# to one user, so a live owner is always one of their own.
+is_stale_lock() {
+    is_stale_lock_pid=$(find_lock_pid "$1") || return 1
+
+    ! kill -0 "$is_stale_lock_pid" 2>/dev/null
+}
+
+# The one EXIT handler, since a shell keeps a single one and both the scratch
+# of a running install and the lock have to be given back on the way out. That
+# includes the way out an interrupt makes: the signal handlers only exit,
+# leaving the work to the handler POSIX runs on the way out of an `exit` from a
+# trap.
+on_exit() {
+    on_exit_status=$?
+
+    if [ -n "$ZIGM_SCRATCH_VERSION" ]; then
+        on_exit_version="$ZIGM_SCRATCH_VERSION"
+        ZIGM_SCRATCH_VERSION=''
+        reclaim_scratch "$on_exit_version"
+    fi
+
+    drop_lock
+
+    # Kept, since a shell is free to end on the status of the handler.
+    return "$on_exit_status"
+}
+
+# Installs the exit handlers. Idempotent, and called by everything that takes
+# the lock or makes scratch, since the last `trap` for a condition is the only
+# one a shell keeps.
+arm_exit() {
+    trap 'on_exit' EXIT
+    trap 'exit 1' HUP INT TERM
+}
+
+# Takes the lock over the data directory, or exits when another run holds it.
+# Sets ZIGM_LOCK_DIR. Requires require_dirs.
+require_lock() {
+    # A run that already holds the lock keeps it, rather than reporting itself
+    # as the other zigm that is running.
+    [ -z "$ZIGM_LOCK_DIR" ] || return 0
+
+    require_lock_dir="${ZIGM_DATA_DIR:?}/.lock"
+
+    mkdir -p "$ZIGM_DATA_DIR" || die "cannot create $ZIGM_DATA_DIR"
+
+    if ! mkdir "$require_lock_dir" 2>/dev/null; then
+        is_stale_lock "$require_lock_dir" || die \
+            "another zigm is running, or a stale lock is left at $require_lock_dir"
+
+        warn "reclaiming the lock at $require_lock_dir, its owner is gone"
+        rm -rf -- "${require_lock_dir:?}" ||
+            die "cannot remove $require_lock_dir"
+
+        # The reclaim above races every other run reclaiming the same lock, and
+        # only one of them can win the `mkdir` that follows.
+        mkdir "$require_lock_dir" 2>/dev/null ||
+            die "another zigm is running, its lock is at $require_lock_dir"
+    fi
+
+    ZIGM_LOCK_DIR="$require_lock_dir"
+
+    # Armed before the pid is written, so a signal arriving in between still
+    # gives the lock back.
+    arm_exit
+
+    printf '%s\n' "$$" > "$require_lock_dir/pid" ||
+        warn "cannot record the owner of $require_lock_dir"
+
+    debug "lock: $require_lock_dir"
+}
+
+# Gives the lock back, if this run holds it.
+drop_lock() {
+    [ -n "$ZIGM_LOCK_DIR" ] || return 0
+
+    drop_lock_dir="$ZIGM_LOCK_DIR"
+    ZIGM_LOCK_DIR=''
+
+    rm -rf -- "${drop_lock_dir:?}" || warn "cannot remove $drop_lock_dir"
 }
 
 # ---------------------------------------------------------------------------
@@ -1088,10 +1213,9 @@ install_payload() {
     install_payload_root="$install_payload_scratch/root"
 
     # Every exit from here on goes through reclaim_scratch, including the one
-    # an interrupt makes: the signal handlers only exit, leaving the work to
-    # the handler POSIX runs on the way out.
-    trap 'reclaim_scratch "$ZIGM_ZIG_VERSION"' EXIT
-    trap 'exit 1' HUP INT TERM
+    # an interrupt makes, which is what the exit handler is for.
+    ZIGM_SCRATCH_VERSION="$ZIGM_ZIG_VERSION"
+    arm_exit
 
     rm -rf -- "$install_payload_scratch" ||
         die "cannot clear $install_payload_scratch"
@@ -1131,7 +1255,7 @@ install_payload() {
     mv -f -- "$install_payload_root" "$install_payload_dir" ||
         die "cannot move the install into $install_payload_dir"
 
-    trap - EXIT HUP INT TERM
+    ZIGM_SCRATCH_VERSION=''
     reclaim_scratch "$ZIGM_ZIG_VERSION"
 }
 
@@ -1148,8 +1272,8 @@ install_zls_into() {
     install_zls_into_scratch="${ZIGM_VERSIONS_DIR:?}/.new-${ZIGM_ZIG_VERSION:?}"
     install_zls_into_root="$install_zls_into_scratch/root"
 
-    trap 'reclaim_scratch "$ZIGM_ZIG_VERSION"' EXIT
-    trap 'exit 1' HUP INT TERM
+    ZIGM_SCRATCH_VERSION="$ZIGM_ZIG_VERSION"
+    arm_exit
 
     rm -rf -- "$install_zls_into_scratch" ||
         die "cannot clear $install_zls_into_scratch"
@@ -1168,7 +1292,7 @@ install_zls_into() {
     write_meta "$install_zls_into_dir" "$ZIGM_ZLS_VERSION" ||
         warn "cannot record what zig $ZIGM_ZIG_VERSION holds"
 
-    trap - EXIT HUP INT TERM
+    ZIGM_SCRATCH_VERSION=''
     reclaim_scratch "$ZIGM_ZIG_VERSION"
 }
 
@@ -1256,6 +1380,7 @@ cmd_install() {
     require_jq
     require_sha256
     ensure_dirs
+    require_lock
 
     install_version "$cmd_install_version" "$cmd_install_use"
 }
@@ -1264,6 +1389,7 @@ cmd_use() {
     [ "$#" -eq 1 ] || die_usage 'use takes exactly one version'
     is_version_name "$1" || die_usage "'$1' is not a version"
     ensure_dirs
+    require_lock
 
     cmd_use_dir="$ZIGM_VERSIONS_DIR/$1"
     if [ ! -d "$cmd_use_dir" ]; then
@@ -1283,6 +1409,10 @@ cmd_use() {
 cmd_uninstall() {
     [ "$#" -eq 1 ] || die_usage 'uninstall takes exactly one version'
     is_version_name "$1" || die_usage "'$1' is not a version"
+
+    # Taken before the version is looked for, so no install can arrive between
+    # the look and the removal.
+    require_lock
 
     # is_version_name has already refused an empty name and a name holding a
     # slash or a dot, so a non-empty versions directory keeps the removal below
@@ -1421,6 +1551,7 @@ cmd_update() {
     require_jq
     require_sha256
     ensure_dirs
+    require_lock
 
     # A nightly is what update replaces, so `current` follows the new one only
     # when it pointed at a nightly already, or when nothing is active at all
@@ -1440,6 +1571,10 @@ cmd_update() {
 
 cmd_clean() {
     [ "$#" -eq 0 ] || die_usage 'clean takes no arguments'
+
+    # Held for the sweep below, which would otherwise take the scratch of a
+    # running install for the leavings of a dead one.
+    require_lock
 
     # First, since the cache being empty already is enough to end the command.
     sweep_scratch

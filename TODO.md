@@ -236,11 +236,39 @@
     - [X] The `--no-zls` warning moved along with it, since it announces a
           skipped resolution and has nothing to say about an installed
           version.
-- [ ] Decide whether concurrent installs need a lock.
+- [X] Decide whether concurrent installs need a lock.
     - Two installs of one version share `.new-<version>`, and the second
       removes what the first is assembling.
     - A `clean` run alongside an install sweeps the scratch out from under it,
       which the same lock would cover.
+    - [X] Settled: one lock over the whole data directory, taken by every
+          command that writes, and a second run exits rather than waiting.
+        - A lock per version would not cover `clean`, which sweeps every
+          version's scratch and would have to hold all of them.
+        - `install`, `update`, `use`, `uninstall`, and `clean` take it, while
+          `list`, `list-remote`, `which`, and `current` take nothing.
+    - [X] The lock is the directory `<data>/.lock`, since `mkdir` is the only
+          exclusive create POSIX sh has, and it holds the pid of the run that
+          took it.
+        - A lock whose owner is gone is reclaimed, since a kill or a power loss
+          leaves nobody to give it back.
+        - `kill -0` cannot see another user's process, but a data directory
+          belongs to one user, so a live owner is always one of their own.
+        - A lock recording no pid is not reclaimed: a run that has not written
+          its pid yet cannot be told from one that died in that window, one
+          `printf` wide, so the message names the directory to remove.
+    - [X] `require_lock` is re-entrant, since the lock is given back on the way
+          out and a run taking it twice would otherwise report itself.
+    - [X] One EXIT handler, `on_exit`, gives back both the lock and the scratch
+          of a running install, since a shell keeps a single one and the traps
+          `install_payload` set would otherwise clear it.
+        - `ZIGM_SCRATCH_VERSION` names the version being assembled, replacing
+          the trap that install set and cleared around its own work.
+        - Checked by hand under sh, dash, bash, and zsh in sh emulation, which
+          all give back both on a TERM and on a HUP, since a test cannot signal
+          the subject it runs.
+        - INT was not checked the same way, since a shell ignores it in a job
+          it backgrounded, and it shares its handler with the other two.
 - [ ] Investigate whether `sed` alone can replace `jq`, dropping the last hard
       dependency.
     - [ ] Move config to a simpler to read and write format like `conf`.

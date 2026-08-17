@@ -191,6 +191,7 @@ zigm_install_setup() {
     zigm_root="$ZIGM_TMP/install"
     rm -rf "$zigm_root"
 
+    ZIGM_DATA_DIR="$zigm_root"
     ZIGM_VERSIONS_DIR="$zigm_root/versions"
     ZIGM_CURRENT_LINK="$zigm_root/current"
     ZIGM_CACHE_DIR="$zigm_root/cache"

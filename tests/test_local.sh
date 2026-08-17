@@ -459,11 +459,22 @@ test_is_removable_accepts_a_directory_below_the_root() {
 
 test_clean_refuses_a_cache_directory_of_root() {
     # `rm` is replaced rather than trusted, so a regression here fails the test
-    # instead of the machine. It records the call, since a stub that failed the
-    # test would exit 1 and read as the error the assertion is looking for.
+    # instead of the machine. A removal inside the scratch space is let through,
+    # which is how the lock cmd_clean takes is given back, and anything else is
+    # recorded rather than run. Recorded, since a stub that failed the test
+    # would exit 1 and read as the error the assertion is looking for.
     # shellcheck disable=SC2329 # cmd_clean calls it, if it is broken.
-    rm() { printf '%s\n' "$*" >>"$ZIGM_TMP/rm-calls"; }
+    rm() {
+        case "$*" in
+            *"$ZIGM_TMP"*) command rm "$@" ;;
+            *) printf '%s\n' "$*" >>"$ZIGM_TMP/rm-calls" ;;
+        esac
+    }
 
+    # shellcheck disable=SC2034 # cmd_clean reads it.
+    ZIGM_DATA_DIR="$ZIGM_TMP/clean-root"
+    # shellcheck disable=SC2034 # sweep_scratch reads it.
+    ZIGM_VERSIONS_DIR="$ZIGM_TMP/clean-root/versions"
     # shellcheck disable=SC2034 # cmd_clean reads it.
     ZIGM_CACHE_DIR=/
     assert_status "$ZIGM_EX_ERROR" cmd_clean
