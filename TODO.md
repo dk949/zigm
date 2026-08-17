@@ -201,11 +201,30 @@
           cache removal, which returns early when the cache is already empty.
         - It is not behind a flag, since neither half of a pair is an install
           and both are rebuilt on demand.
-- [ ] Record which zls version an installed version holds.
+- [X] Record which zls version an installed version holds.
     - Nothing on disk names it, so `list` and `current` cannot show it and an
       install made with `--no-zls` can only gain a zls through `--force`.
-    - [ ] Settle where it lives, since a file under the version directory sits
+    - [X] Settle where it lives, since a file under the version directory sits
           beside the tarball's own contents.
+        - Settled: a dot prefixed `.zigm` inside the version directory, holding
+          `key=value` lines, of which `zls` is the only one so far.
+        - It cannot collide with the tarball's own contents, and every rename
+          that moves a version moves it too.
+        - `install_payload` writes it into the scratch root, so it arrives with
+          the rest of the install rather than in a step of its own.
+    - [X] `list` and `current` show the zls in a column of their own, which
+          they line up with each other.
+        - A version whose record is missing reads `zls (unknown)`, since
+          neither tarball names the version and an install made by an earlier
+          zigm left nothing to read.
+        - One holding no zls at all reads `no zls`.
+        - A caller after bare names now takes the first field rather than the
+          whole line.
+    - [X] A plain install of a version holding no zls adds the zls it pairs
+          with, so `--no-zls` can be filled in later without `--force`.
+        - `install_zls_into` unpacks the binary in the same scratch directory
+          an install works in and moves it in on its own, leaving the rest of
+          the version alone, so a failure anywhere leaves it as it was.
 - [X] Check whether a version is installed before resolving its zls.
     - `install_version` resolved the pairing first, so reinstalling an
       installed version asked the API for an answer it threw away, and failed

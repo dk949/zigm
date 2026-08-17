@@ -425,6 +425,79 @@ test_install_does_not_warn_about_zls_on_an_installed_version() {
     assert_contains "$zigm_out" 'already installed' 'note'
 }
 
+test_install_records_the_zls_it_installed() {
+    zigm_install_setup
+    install_version 0.15.1 0
+    assert_out 'zls 0.15.0' find_zls_note "$ZIGM_VERSIONS_DIR/0.15.1"
+}
+
+test_install_records_that_no_zls_was_installed() {
+    zigm_install_setup
+    ZIGM_NO_ZLS=1
+    fetch_stdout() { fail 'the zls API was queried'; }
+
+    install_version 0.15.1 0 2>/dev/null
+    assert_file "$ZIGM_VERSIONS_DIR/0.15.1/.zigm" 'the record'
+    assert_out 'no zls' find_zls_note "$ZIGM_VERSIONS_DIR/0.15.1"
+}
+
+test_install_adds_a_zls_a_version_is_missing() {
+    zigm_install_setup
+    ZIGM_NO_ZLS=1
+    install_version 0.15.1 0 2>/dev/null
+    printf 'kept\n' >"$ZIGM_VERSIONS_DIR/0.15.1/marker"
+
+    # The zig tarball is not fetched again, since the version itself is left
+    # exactly as it was.
+    ZIGM_NO_ZLS=0
+    fetch_file() {
+        case "$1" in
+            *zig-*) fail "downloaded $1" ;;
+            *) zigm_fetch_file "$@" ;;
+        esac
+    }
+
+    install_version 0.15.1 0 2>/dev/null
+    [ -x "$ZIGM_VERSIONS_DIR/0.15.1/zls" ] || fail 'zls was not added'
+    assert_file "$ZIGM_VERSIONS_DIR/0.15.1/marker" 'untouched install'
+    assert_file "$ZIGM_VERSIONS_DIR/0.15.1/lib/std.zig" "zig's lib directory"
+    assert_out 'zls 0.15.0' find_zls_note "$ZIGM_VERSIONS_DIR/0.15.1"
+    assert_no_scratch
+}
+
+test_install_keeps_the_zls_tarballs_extras_off_an_existing_version() {
+    zigm_install_setup
+    ZIGM_NO_ZLS=1
+    install_version 0.15.1 0 2>/dev/null
+
+    ZIGM_NO_ZLS=0
+    install_version 0.15.1 0 2>/dev/null
+
+    assert_eq 'zig license' \
+        "$(cat "$ZIGM_VERSIONS_DIR/0.15.1/LICENSE")" 'LICENSE'
+    [ ! -e "$ZIGM_VERSIONS_DIR/0.15.1/README.md" ] ||
+        fail "the zls tarball's README was installed"
+}
+
+test_install_leaves_a_version_alone_when_adding_its_zls_fails() {
+    zigm_install_setup
+    ZIGM_NO_ZLS=1
+    install_version 0.15.1 0 2>/dev/null
+
+    ZIGM_NO_ZLS=0
+    fetch_file() {
+        case "$1" in
+            *zls-*) return 1 ;;
+            *) zigm_fetch_file "$@" ;;
+        esac
+    }
+
+    assert_status "$ZIGM_EX_ERROR" install_version 0.15.1 0
+    [ ! -e "$ZIGM_VERSIONS_DIR/0.15.1/zls" ] || fail 'a failed download installed zls'
+    assert_file "$ZIGM_VERSIONS_DIR/0.15.1/zig" 'the version itself'
+    assert_no_scratch
+}
+
 test_install_says_a_version_is_already_installed() {
     zigm_install_setup
     ZIGM_QUIET=0

@@ -37,6 +37,37 @@ install_fake() {
     done
 }
 
+# record_fake_zls <version> <zls version>
+#
+# Writes the record a real install leaves behind, which install_fake does not,
+# so that a test can tell a version installed by this zigm from one installed
+# before it kept a record.
+record_fake_zls() {
+    printf 'zls=%s\n' "$2" >"$ZIGM_TMP/data/versions/$1/.zigm" ||
+        fail "cannot record the zls of $1"
+}
+
+# list_marks
+#
+# Runs `list` and prints the mark and the version alone. The tests below care
+# about the order and the marks rather than about the padding, which the zls
+# column tests cover instead.
+list_marks() {
+    zigm_run list | awk '{
+        mark = substr($0, 1, 1)
+        rest = substr($0, 3)
+        sub(/[[:space:]].*$/, "", rest)
+        printf "%s %s\n", mark, rest
+    }'
+}
+
+# current_version
+#
+# Runs `current` and prints the version alone, for the same reason.
+current_version() {
+    zigm_run current | awk '{ print $1 }'
+}
+
 # ---------------------------------------------------------------------------
 # Version names
 # ---------------------------------------------------------------------------
@@ -183,7 +214,7 @@ test_list_marks_the_active_version() {
     zigm_run use 0.15.1 >/dev/null 2>&1
 
     assert_out '  0.14.1
-* 0.15.1' zigm_run list
+* 0.15.1' list_marks
 }
 
 test_list_orders_oldest_first() {
@@ -194,7 +225,79 @@ test_list_orders_oldest_first() {
 
     assert_out '  0.9.0
   0.15.1
-  0.16.0-dev.99+ab' zigm_run list
+  0.16.0-dev.99+ab' list_marks
+}
+
+# ---------------------------------------------------------------------------
+# The record of what an install holds
+# ---------------------------------------------------------------------------
+
+test_write_meta_and_find_meta_round_trip() {
+    zigm_dir="$ZIGM_TMP/meta/0.15.1"
+    mkdir -p "$zigm_dir"
+    assert_ok write_meta "$zigm_dir" 0.15.0
+    assert_out '0.15.0' find_meta "$zigm_dir" zls
+}
+
+test_find_meta_fails_without_a_record_or_a_key() {
+    zigm_dir="$ZIGM_TMP/meta_missing/0.15.1"
+    mkdir -p "$zigm_dir"
+    assert_fails find_meta "$zigm_dir" zls
+
+    write_meta "$zigm_dir" 0.15.0
+    assert_fails find_meta "$zigm_dir" nothing
+}
+
+test_find_meta_fails_on_an_empty_value() {
+    # Which is what an install made with --no-zls writes, so the key being
+    # there is not the same as a version being known.
+    zigm_dir="$ZIGM_TMP/meta_empty/0.15.1"
+    mkdir -p "$zigm_dir"
+    assert_ok write_meta "$zigm_dir" ''
+    assert_fails find_meta "$zigm_dir" zls
+}
+
+test_find_zls_note_names_the_recorded_version() {
+    reset_data
+    install_fake 0.15.1
+    record_fake_zls 0.15.1 0.15.0
+    assert_out 'zls 0.15.0' find_zls_note "$ZIGM_TMP/data/versions/0.15.1"
+}
+
+test_find_zls_note_reports_a_version_holding_no_zls() {
+    reset_data
+    install_fake 0.15.1 zig
+    assert_out 'no zls' find_zls_note "$ZIGM_TMP/data/versions/0.15.1"
+}
+
+test_find_zls_note_reports_a_zls_no_record_names() {
+    # An install made before zigm kept a record, which cannot be read off the
+    # directory since neither tarball carries the version.
+    reset_data
+    install_fake 0.15.1
+    assert_out 'zls (unknown)' find_zls_note "$ZIGM_TMP/data/versions/0.15.1"
+}
+
+test_list_names_the_zls_of_each_version() {
+    reset_data
+    install_fake 0.14.1
+    record_fake_zls 0.14.1 0.14.0
+    install_fake 0.15.1 zig
+
+    zigm_out=$(zigm_run list)
+    assert_contains "$zigm_out" '0.14.1' 'the version'
+    assert_contains "$zigm_out" 'zls 0.14.0' 'the recorded zls'
+    assert_contains "$zigm_out" 'no zls' 'the version holding no zls'
+}
+
+test_current_names_the_zls_of_the_active_version() {
+    reset_data
+    install_fake 0.15.1
+    record_fake_zls 0.15.1 0.15.0
+    zigm_run use 0.15.1 >/dev/null 2>&1
+
+    assert_contains "$(zigm_run current)" 'zls 0.15.0' 'the recorded zls'
+    assert_out '0.15.1' current_version
 }
 
 # ---------------------------------------------------------------------------
@@ -205,7 +308,7 @@ test_use_activates_an_installed_version() {
     reset_data
     install_fake 0.15.1
     assert_status 0 zigm_run use 0.15.1
-    assert_out '0.15.1' zigm_run current
+    assert_out '0.15.1' current_version
 }
 
 test_use_switches_between_versions() {
@@ -214,7 +317,7 @@ test_use_switches_between_versions() {
     install_fake 0.15.1
     zigm_run use 0.14.1 >/dev/null 2>&1
     assert_status 0 zigm_run use 0.15.1
-    assert_out '0.15.1' zigm_run current
+    assert_out '0.15.1' current_version
 }
 
 test_use_rejects_a_version_that_is_not_installed() {
@@ -289,7 +392,7 @@ test_uninstall_removes_the_version() {
     install_fake 0.15.1
     assert_status 0 zigm_run uninstall 0.14.1
     [ ! -d "$ZIGM_TMP/data/versions/0.14.1" ] || fail 'the version is still there'
-    assert_out '  0.15.1' zigm_run list
+    assert_out '  0.15.1' list_marks
 }
 
 test_uninstall_drops_the_link_when_the_version_is_active() {
@@ -309,7 +412,7 @@ test_uninstall_keeps_the_link_when_another_version_is_active() {
     install_fake 0.15.1
     zigm_run use 0.15.1 >/dev/null 2>&1
     assert_status 0 zigm_run uninstall 0.14.1
-    assert_out '0.15.1' zigm_run current
+    assert_out '0.15.1' current_version
 }
 
 test_uninstall_rejects_a_version_that_is_not_installed() {

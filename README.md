@@ -76,21 +76,25 @@ covers the rest.
 
 * `install <version>`
     * Install a zig and zls pair and activate it. The version is a tag such as
-      `0.15.1`, or `master` for the nightly.
+      `0.15.1`, or `master` for the nightly. A version that is already
+      installed is left as it is, except that one holding no zls gains the zls
+      it pairs with.
 * `use <version>`
     * Point `current` at an already installed version.
 * `uninstall <version>`
     * Remove an installed version. Removing the active one drops the `current`
       link and warns.
 * `list`
-    * List installed versions, oldest first, starring the active one.
+    * List installed versions, oldest first, starring the active one, with the
+      zls each one holds in a column of its own.
 * `list-remote`
     * List the upstream versions that have a build for this platform, marking
       an installed one with `i` and the active one with `*`.
 * `which [name]`
     * Print the path of an active binary, `zig` by default.
 * `current`
-    * Print the active version.
+    * Print the active version and the zls it holds, in the columns `list`
+      uses.
 * `update`
     * Install `master` at whatever version it resolves to now.
 * `clean`
@@ -138,7 +142,7 @@ zigm install master          # install tonight's nightly
 zigm install 0.14.1 --no-use # install without switching to it
 zigm use 0.14.1              # switch
 zigm list                    # see what is installed
-zigm current                 # 0.14.1
+zigm current                 # 0.14.1                      zls 0.14.0
 zigm which zls               # path to the active zls
 zigm update                  # move master forward
 zigm uninstall 0.14.1        # remove a version
@@ -149,6 +153,10 @@ zigm uninstall 0.14.1        # remove a version
 * Versions live in `<data>/zigm/versions/<version>/`, each holding the `zig` and
   `zls` binaries next to zig's `lib` directory, since zig locates that directory
   relative to its own path.
+* A `.zigm` file in the version directory records the zls version installed
+  with it, which nothing in either tarball names. A version installed before
+  zigm kept that record is listed as `zls (unknown)`, and one installed with
+  `--no-zls` as `no zls`.
 * `<data>/zigm/current` is a symlink to one of those directories. Switching is a
   single symlink swap, so a version is never partly active.
 * An install is assembled in a scratch directory and moved into place with a
