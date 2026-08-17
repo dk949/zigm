@@ -485,6 +485,97 @@ test_install_keeps_the_old_version_when_a_forced_reinstall_fails() {
 
     assert_status "$ZIGM_EX_ERROR" install_version 0.15.1 0
     assert_file "$ZIGM_VERSIONS_DIR/0.15.1/marker" 'the old install'
+    assert_no_scratch
+}
+
+test_install_leaves_no_scratch_when_it_fails() {
+    zigm_install_setup
+    zigm_write_file "$zigm_fix/empty/notzig" 'nothing useful'
+    zigm_pack "$zigm_fix/zig.tar.xz" "$zigm_fix/empty" . ||
+        fail 'cannot build the fixture tarball'
+    zigm_zig_sha=''
+    zigm_write_index "$ZIGM_CACHE_DIR/index.json"
+
+    assert_status "$ZIGM_EX_ERROR" install_version 0.15.1 1
+    assert_no_scratch
+}
+
+# ---------------------------------------------------------------------------
+# Reclaiming install scratch
+#
+# The signal handlers only exit, so what they reach is the EXIT handler these
+# cover. Delivering a real signal is left untested, since a test cannot signal
+# the subshell it runs its subject in without naming a pid the shell does not
+# hand out.
+# ---------------------------------------------------------------------------
+
+# Writes a scratch pair for a version, and the version directory when asked.
+zigm_fake_scratch() {
+    mkdir -p "$ZIGM_VERSIONS_DIR/.new-$1/root" ||
+        fail 'cannot create the new scratch directory'
+    mkdir -p "$ZIGM_VERSIONS_DIR/.old-$1" || fail 'cannot create the old one'
+    printf 'old\n' >"$ZIGM_VERSIONS_DIR/.old-$1/marker" ||
+        fail 'cannot mark the old install'
+
+    [ "${2:-0}" -eq 1 ] || return 0
+    mkdir -p "$ZIGM_VERSIONS_DIR/$1" || fail "cannot create the $1 directory"
+    printf 'new\n' >"$ZIGM_VERSIONS_DIR/$1/marker" ||
+        fail 'cannot mark the new install'
+}
+
+test_reclaim_scratch_puts_a_version_back_when_it_never_arrived() {
+    zigm_install_setup
+    zigm_fake_scratch 0.15.1 0
+
+    assert_ok reclaim_scratch 0.15.1
+    assert_out 'old' cat "$ZIGM_VERSIONS_DIR/0.15.1/marker"
+    assert_no_scratch
+}
+
+test_reclaim_scratch_drops_the_old_copy_when_the_new_one_is_there() {
+    zigm_install_setup
+    zigm_fake_scratch 0.15.1 1
+
+    assert_ok reclaim_scratch 0.15.1
+    assert_out 'new' cat "$ZIGM_VERSIONS_DIR/0.15.1/marker"
+    assert_no_scratch
+}
+
+test_reclaim_scratch_says_it_put_a_version_back() {
+    zigm_install_setup
+    zigm_fake_scratch 0.16.0 0
+    assert_contains "$(reclaim_scratch 0.16.0 2>&1)" 'put zig 0.16.0 back' 'warning'
+}
+
+test_reclaim_scratch_is_a_no_op_with_nothing_to_reclaim() {
+    zigm_install_setup
+    assert_ok reclaim_scratch 0.15.1
+    [ ! -e "$ZIGM_VERSIONS_DIR/0.15.1" ] || fail 'a version was invented'
+}
+
+test_sweep_scratch_reclaims_every_version_it_finds() {
+    zigm_install_setup
+    zigm_fake_scratch 0.15.1 0
+    zigm_fake_scratch 0.16.0 1
+    mkdir -p "$ZIGM_VERSIONS_DIR/.new-0.14.0" || fail 'cannot create the third'
+
+    assert_ok sweep_scratch
+    assert_out 'old' cat "$ZIGM_VERSIONS_DIR/0.15.1/marker"
+    assert_out 'new' cat "$ZIGM_VERSIONS_DIR/0.16.0/marker"
+    assert_no_scratch
+}
+
+test_sweep_scratch_leaves_installed_versions_alone() {
+    zigm_install_setup
+    install_version 0.15.1 0
+    assert_ok sweep_scratch
+    [ -x "$ZIGM_VERSIONS_DIR/0.15.1/zig" ] || fail 'an install was swept away'
+}
+
+test_sweep_scratch_is_a_no_op_on_an_empty_versions_directory() {
+    zigm_install_setup
+    assert_ok sweep_scratch
+    assert_out '' find_versions "$ZIGM_VERSIONS_DIR"
 }
 
 # ---------------------------------------------------------------------------

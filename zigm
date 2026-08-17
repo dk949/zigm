@@ -103,7 +103,7 @@ commands:
   which [name]         print the path of an active binary, default 'zig'
   current              print the active version
   update               install 'master' at its newest resolved version
-  clean                remove the cache directory
+  clean                remove the cache and any unfinished install leftovers
 
 install and update options:
       --no-zls         install zig alone rather than failing when no zls pairs
@@ -216,7 +216,9 @@ EOF
 usage: zigm clean
 
 Removes the cache directory, which holds the download index alone and is
-refetched on demand. Installed versions are left alone.
+refetched on demand, and the directories an install killed partway through
+left under 'versions'. Installed versions are left alone, and a reinstall
+that never finished puts its old version back.
 EOF
             ;;
         *) return 1 ;;
@@ -964,6 +966,63 @@ install_tarball() {
     fi
 }
 
+# reclaim_scratch <version>
+#
+# Clears the `.new-` and `.old-` directories an install of that version works
+# in, putting the old install back when the new one never arrived. Between the
+# two renames install_payload makes, the old version is reachable only through
+# `.old-`, so that one is restored rather than removed.
+#
+# It reports rather than dies, since it also runs from a trap with the script
+# already on its way out.
+reclaim_scratch() {
+    # Both parts are refused when empty, so the paths below, which are removed
+    # recursively, cannot collapse towards the root.
+    reclaim_scratch_dir="${ZIGM_VERSIONS_DIR:?}/${1:?}"
+    reclaim_scratch_new="$ZIGM_VERSIONS_DIR/.new-$1"
+    reclaim_scratch_old="$ZIGM_VERSIONS_DIR/.old-$1"
+
+    if [ -e "$reclaim_scratch_new" ]; then
+        rm -rf -- "$reclaim_scratch_new" ||
+            warn "cannot remove $reclaim_scratch_new"
+    fi
+
+    [ -e "$reclaim_scratch_old" ] || return 0
+
+    if [ -e "$reclaim_scratch_dir" ]; then
+        rm -rf -- "$reclaim_scratch_old" ||
+            warn "cannot remove $reclaim_scratch_old"
+    elif mv -f -- "$reclaim_scratch_old" "$reclaim_scratch_dir"; then
+        warn "put zig $1 back, its reinstall did not finish"
+    else
+        warn "cannot put zig $1 back at $reclaim_scratch_dir"
+    fi
+}
+
+# sweep_scratch
+#
+# Reclaims every scratch pair under the versions directory. An install traps
+# the signals it can and clears its own, so what is left here comes from one
+# killed outright, or from a crash or a power loss.
+sweep_scratch() {
+    [ -d "${ZIGM_VERSIONS_DIR:-}" ] || return 0
+
+    for sweep_scratch_entry in "$ZIGM_VERSIONS_DIR"/.new-* \
+        "$ZIGM_VERSIONS_DIR"/.old-*; do
+        # A pattern matching nothing is left as it is written, and a pair is
+        # cleared by whichever half is reached first, so the rest are skipped.
+        [ -d "$sweep_scratch_entry" ] || continue
+
+        sweep_scratch_name=${sweep_scratch_entry##*/}
+        sweep_scratch_version=${sweep_scratch_name#.new-}
+        sweep_scratch_version=${sweep_scratch_version#.old-}
+        [ -n "$sweep_scratch_version" ] || continue
+
+        reclaim_scratch "$sweep_scratch_version"
+        info "cleared the unfinished install of zig $sweep_scratch_version"
+    done
+}
+
 # install_payload <version directory>
 #
 # Assembles a version directory from the resolved tarballs and moves it into
@@ -971,11 +1030,17 @@ install_tarball() {
 install_payload() {
     install_payload_dir="$1"
 
-    # Both parts are refused when empty, so the scratch paths below, which are
-    # removed recursively, cannot collapse towards the root.
+    # The names match the ones reclaim_scratch builds, which is what lets a
+    # later run tidy up after this one.
     install_payload_scratch="${ZIGM_VERSIONS_DIR:?}/.new-${ZIGM_ZIG_VERSION:?}"
     install_payload_old="$ZIGM_VERSIONS_DIR/.old-$ZIGM_ZIG_VERSION"
     install_payload_root="$install_payload_scratch/root"
+
+    # Every exit from here on goes through reclaim_scratch, including the one
+    # an interrupt makes: the signal handlers only exit, leaving the work to
+    # the handler POSIX runs on the way out.
+    trap 'reclaim_scratch "$ZIGM_ZIG_VERSION"' EXIT
+    trap 'exit 1' HUP INT TERM
 
     rm -rf -- "$install_payload_scratch" ||
         die "cannot clear $install_payload_scratch"
@@ -1004,14 +1069,13 @@ install_payload() {
             die "cannot replace $install_payload_dir"
     fi
 
-    mv -f -- "$install_payload_root" "$install_payload_dir" || {
-        # Put the old version back, since the new one never arrived.
-        [ ! -d "$install_payload_old" ] ||
-            mv -f -- "$install_payload_old" "$install_payload_dir"
+    # A failure here leaves the old version in `.old-` alone, which is where
+    # reclaim_scratch finds it and puts it back.
+    mv -f -- "$install_payload_root" "$install_payload_dir" ||
         die "cannot move the install into $install_payload_dir"
-    }
 
-    rm -rf -- "$install_payload_scratch" "$install_payload_old"
+    trap - EXIT HUP INT TERM
+    reclaim_scratch "$ZIGM_ZIG_VERSION"
 }
 
 # install_version <requested version> <activate, 0 or 1>
@@ -1267,6 +1331,9 @@ cmd_update() {
 
 cmd_clean() {
     [ "$#" -eq 0 ] || die_usage 'clean takes no arguments'
+
+    # First, since the cache being empty already is enough to end the command.
+    sweep_scratch
 
     # The cache holds only the download index and the tarballs, both of which
     # are refetched on demand, so the whole directory goes.

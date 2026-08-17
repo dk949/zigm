@@ -94,7 +94,9 @@ covers the rest.
 * `update`
     * Install `master` at whatever version it resolves to now.
 * `clean`
-    * Remove the cache directory.
+    * Remove the cache directory, and the scratch directories an install
+      killed partway through left under `versions`. A reinstall that never
+      finished puts its old version back rather than losing it.
 
 ### Install and update options
 

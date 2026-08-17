@@ -391,4 +391,37 @@ test_clean_leaves_installed_versions_alone() {
     assert_dir "$ZIGM_TMP/data/versions/0.15.1" 'installed version'
 }
 
+test_clean_sweeps_what_an_unfinished_install_left() {
+    reset_data
+    install_fake 0.15.1
+    mkdir -p "$ZIGM_TMP/data/versions/.new-0.16.0/root"
+
+    assert_contains "$(zigm_run_out clean)" 'unfinished install of zig 0.16.0' \
+        'sweep report'
+    [ ! -e "$ZIGM_TMP/data/versions/.new-0.16.0" ] ||
+        fail 'the scratch directory is still there'
+    assert_dir "$ZIGM_TMP/data/versions/0.15.1" 'installed version'
+}
+
+test_clean_puts_back_a_version_an_unfinished_reinstall_moved_aside() {
+    reset_data
+    install_fake 0.15.1
+    mv "$ZIGM_TMP/data/versions/0.15.1" "$ZIGM_TMP/data/versions/.old-0.15.1"
+
+    assert_status 0 zigm_run clean
+    assert_file "$ZIGM_TMP/data/versions/0.15.1/zig" 'the restored version'
+    [ ! -e "$ZIGM_TMP/data/versions/.old-0.15.1" ] ||
+        fail 'the moved aside copy is still there'
+}
+
+test_clean_sweeps_even_when_the_cache_is_already_empty() {
+    reset_data
+    rm -rf "$ZIGM_TMP/cache"
+    mkdir -p "$ZIGM_TMP/data/versions/.new-0.16.0"
+
+    assert_status 0 zigm_run clean
+    [ ! -e "$ZIGM_TMP/data/versions/.new-0.16.0" ] ||
+        fail 'the scratch directory survived an empty cache'
+}
+
 run_tests

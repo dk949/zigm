@@ -177,12 +177,30 @@
           `zigm -h install` and `zigm install -h` agree.
         - The help is printed before any work, so it needs no active version
           and no network.
-- [ ] Sweep the install scratch directories left behind by a failed install.
+- [X] Sweep the install scratch directories left behind by a failed install.
     - `install_payload` writes `versions/.new-<version>` and
       `versions/.old-<version>`, and only an install of that same version
       clears them again, so an interrupt leaves them there for good.
-    - [ ] Decide between sweeping them in `clean`, which removes the cache
+    - [X] Decide between sweeping them in `clean`, which removes the cache
           alone today, and clearing them with a trap as the install exits.
+        - Settled: both, since a trap cannot catch a kill, a crash, or a power
+          loss, and `clean` cannot help an install that is still running.
+    - [X] `reclaim_scratch` clears one version's pair and is the whole of the
+          recovery, called from the trap, from the end of a finished install,
+          and from `clean`.
+        - Between the two renames `install_payload` makes, the old version is
+          reachable only through `.old-`, so that one is put back rather than
+          removed.
+        - The restore `install_payload` did inline when the second rename
+          failed is gone, since the trap now does it on the way out.
+    - [X] The signal handlers only `exit`, leaving the work to the EXIT
+          handler, which POSIX runs on the way out of an `exit` from a trap.
+        - Checked by hand under sh, dash, bash, and zsh in sh emulation, since
+          a test cannot signal the subshell it runs its subject in.
+    - [X] `clean` sweeps every pair under the versions directory, before the
+          cache removal, which returns early when the cache is already empty.
+        - It is not behind a flag, since neither half of a pair is an install
+          and both are rebuilt on demand.
 - [ ] Record which zls version an installed version holds.
     - Nothing on disk names it, so `list` and `current` cannot show it and an
       install made with `--no-zls` can only gain a zls through `--force`.
@@ -202,6 +220,8 @@
 - [ ] Decide whether concurrent installs need a lock.
     - Two installs of one version share `.new-<version>`, and the second
       removes what the first is assembling.
+    - A `clean` run alongside an install sweeps the scratch out from under it,
+      which the same lock would cover.
 - [ ] Investigate whether `sed` alone can replace `jq`, dropping the last hard
       dependency.
     - [ ] Move config to a simpler to read and write format like `conf`.
