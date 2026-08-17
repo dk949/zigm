@@ -22,6 +22,65 @@ test_help_lists_the_commands() {
     done
 }
 
+test_help_describes_one_command() {
+    zigm_help=$(zigm_run install --help)
+    assert_contains "$zigm_help" 'usage: zigm install' 'install usage line'
+    assert_contains "$zigm_help" '--no-zls' 'install option'
+    assert_contains "$zigm_help" "zigm --help" 'pointer to the global options'
+}
+
+test_command_help_is_taken_from_anywhere_on_the_line() {
+    assert_eq "$(zigm_run install --help)" "$(zigm_run -h install)" \
+        'help either side of the command'
+}
+
+test_command_help_exits_zero_for_every_command() {
+    for zigm_cmd in install use uninstall list list-remote which current \
+        update clean; do
+        assert_status 0 zigm_run "$zigm_cmd" --help
+    done
+}
+
+test_command_help_needs_no_state() {
+    # The help comes before any work, so a command that would otherwise fail
+    # without an active version still prints it.
+    assert_status 0 zigm_run current --help
+    assert_status 0 zigm_run which --help
+}
+
+test_help_for_an_unknown_command_is_a_usage_error() {
+    assert_status "$ZIGM_EX_USAGE" zigm_run frobnicate --help
+    assert_contains "$(zigm_run_out frobnicate --help)" 'unknown command' \
+        'message'
+}
+
+test_global_flags_are_taken_after_the_command() {
+    zigm_out=$(zigm_run_out list -v)
+    assert_contains "$zigm_out" 'zigm: debug: platform:' 'platform debug line'
+
+    assert_status 0 zigm_run list --refresh
+    assert_eq '' "$(zigm_run_out list --quiet)" 'quiet output'
+}
+
+test_a_global_flag_never_reaches_the_command() {
+    # use fails because the version is not installed, an error rather than the
+    # usage error an unparsed -v would have caused.
+    assert_status "$ZIGM_EX_ERROR" zigm_run use -v 0.15.1
+    assert_status "$ZIGM_EX_ERROR" zigm_run use 0.15.1 -v
+}
+
+test_an_unknown_option_after_the_command_is_the_commands_own() {
+    assert_status "$ZIGM_EX_USAGE" zigm_run install 0.15.1 --nope
+    assert_contains "$(zigm_run_out install 0.15.1 --nope)" \
+        "unknown option '--nope' for install" 'message'
+}
+
+test_a_flag_does_not_swallow_a_later_argument() {
+    # list still sees `extra`, so its argument count check fails.
+    assert_status "$ZIGM_EX_USAGE" zigm_run list extra --verbose
+    assert_status "$ZIGM_EX_USAGE" zigm_run list --verbose extra
+}
+
 test_version_prints_the_version() {
     assert_out "$ZIGM_VERSION" zigm_run --version
     assert_out "$ZIGM_VERSION" zigm_run -V

@@ -65,6 +65,13 @@ If you set `ZIGM_DATA_DIR`, use `$ZIGM_DATA_DIR/current` instead.
 zigm [global options] <command> [arguments]
 ```
 
+The global options are accepted after the command as well as before it, so
+`zigm install -v 0.15.1` and `zigm -v install 0.15.1` are the same. Everything
+after a `--` is taken as the command and its arguments, whatever it looks like.
+
+`zigm <command> --help` describes one command on its own, and `zigm --help`
+covers the rest.
+
 ### Commands
 
 * `install <version>`
@@ -100,7 +107,8 @@ zigm [global options] <command> [arguments]
 
 ### Global options
 
-* `-h`, `--help`, print help and exit.
+* `-h`, `--help`, print help and exit. With a command on the line, the help is
+  that command's.
 * `-V`, `--version`, print the zigm version and exit.
 * `-v`, `--verbose`, print debug output on stderr.
 * `-q`, `--quiet`, print errors and warnings only.

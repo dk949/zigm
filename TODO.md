@@ -158,11 +158,25 @@
 - [X] Write README covering install and the `PATH` setup the user must do.
     - Also covers the requirements, every command and flag, the on disk layout,
       and how to run the tests.
-- [ ] Accept the global flags after the subcommand as well as before it.
-    - `zigm install -v 0.15.1` and `zigm list-remote --refresh` are both a
-      usage error today, since only the leading flags are parsed.
-    - [ ] Give each subcommand a `--help` of its own, which is currently an
-          unknown option.
+- [X] Accept the global flags after the subcommand as well as before it.
+    - `zigm install -v 0.15.1` and `zigm list-remote --refresh` were both a
+      usage error, since only the leading flags were parsed.
+    - [X] `main` walks the whole line, shifting each argument off the front and
+          either consuming it or appending it back, since an argument list is
+          the only list POSIX sh has.
+        - A counter of the arguments still to look at keeps an appended one
+          from being read a second time.
+        - An unknown option before the command stays zigm's own to refuse,
+          while one after it is passed on for the command to refuse.
+        - Everything past a `--` is the command and its arguments, whatever it
+          looks like.
+    - [X] Give each subcommand a `--help` of its own, which was an unknown
+          option.
+        - `usage_command` holds one help text per command, and `main` prints it
+          for a `--help` found anywhere on a line naming a command, so
+          `zigm -h install` and `zigm install -h` agree.
+        - The help is printed before any work, so it needs no active version
+          and no network.
 - [ ] Sweep the install scratch directories left behind by a failed install.
     - `install_payload` writes `versions/.new-<version>` and
       `versions/.old-<version>`, and only an install of that same version

@@ -91,6 +91,9 @@ zigm $ZIGM_VERSION, a Zig toolchain manager.
 usage:
   zigm [global options] <command> [arguments]
 
+The global options are accepted after the command as well as before it, and
+'zigm <command> --help' describes one command on its own.
+
 commands:
   install <version>    install a zig and zls pair, 'master' for nightly
   use <version>        point 'current' at an installed version
@@ -123,6 +126,103 @@ environment:
 exit codes:
   0 success, 1 error, 2 usage error
 EOF
+}
+
+# usage_command <command>
+#
+# Prints the help for one command, and fails on a name that is not a command,
+# leaving the caller to report it. The global options are described by `usage`
+# alone, since they read the same whichever command they are given to.
+usage_command() {
+    case "$1" in
+        install)
+            cat <<'EOF'
+usage: zigm install [options] <version>
+
+Installs a matched zig and zls pair and points 'current' at it. The version is
+a tagged release, or 'master' for the nightly, which is stored under the
+version it resolves to.
+
+options:
+      --no-zls   install zig alone rather than failing when no zls pairs
+      --no-use   leave 'current' alone, install only
+      --force    reinstall a version that is already installed
+EOF
+            ;;
+        use)
+            cat <<'EOF'
+usage: zigm use <version>
+
+Points 'current' at an installed version, in one symlink swap. The version is
+the one 'zigm list' names, so a nightly is asked for by the version it was
+installed under rather than by 'master'.
+EOF
+            ;;
+        uninstall)
+            cat <<'EOF'
+usage: zigm uninstall <version>
+
+Removes an installed version. Removing the active one drops the 'current' link
+first, leaving no version active.
+EOF
+            ;;
+        list)
+            cat <<'EOF'
+usage: zigm list
+
+Lists the installed versions, oldest first, with a star on the active one.
+EOF
+            ;;
+        list-remote)
+            cat <<'EOF'
+usage: zigm list-remote
+
+Lists the upstream versions that have a build for this platform, oldest first,
+with a star on the active one and an 'i' on one that is installed. The nightly
+is listed under the version it resolves to today, annotated with '(master)'.
+EOF
+            ;;
+        which)
+            cat <<'EOF'
+usage: zigm which [name]
+
+Prints the path of a binary in the active version, 'zig' by default. The path
+names the version directory rather than the 'current' link, so it says which
+version the binary belongs to.
+EOF
+            ;;
+        current)
+            cat <<'EOF'
+usage: zigm current
+
+Prints the active version, and fails when no version is active.
+EOF
+            ;;
+        update)
+            cat <<'EOF'
+usage: zigm update [options]
+
+Installs 'master' at the version it resolves to now, always refetching the
+download index. 'current' follows the new nightly only when it pointed at a
+nightly already, or when no version was active, so a pinned release stays.
+
+options:
+      --no-zls   install zig alone rather than failing when no zls pairs
+      --force    reinstall a version that is already installed
+EOF
+            ;;
+        clean)
+            cat <<'EOF'
+usage: zigm clean
+
+Removes the cache directory, which holds the download index alone and is
+refetched on demand. Installed versions are left alone.
+EOF
+            ;;
+        *) return 1 ;;
+    esac
+
+    printf "\nthe global options are accepted here too, see 'zigm --help'\n"
 }
 
 # ---------------------------------------------------------------------------
@@ -1189,49 +1289,77 @@ cmd_clean() {
 # Entry point
 # ---------------------------------------------------------------------------
 
+# main <arguments>
+#
+# The global options are taken wherever they appear, so `zigm install -v 0.15.1`
+# reads the same as `zigm -v install 0.15.1`. The command and everything the
+# command owns are collected as they are found: each argument is shifted off the
+# front and either consumed or appended to the end, and the counter of arguments
+# still to look at keeps the appended ones from being read a second time. An
+# argument list is the only list POSIX sh has.
 main() {
-    while [ "$#" -gt 0 ]; do
-        case "$1" in
-            -h | --help)
-                usage
-                return 0
-                ;;
+    main_cmd=''
+    main_help=0
+    main_end=0
+    main_left="$#"
+
+    while [ "$main_left" -gt 0 ]; do
+        main_arg="$1"
+        shift
+        main_left=$((main_left - 1))
+
+        # Past a `--` nothing is an option any more, so the rest is the command
+        # and its arguments however they are spelled.
+        if [ "$main_end" -eq 1 ]; then
+            if [ -z "$main_cmd" ]; then
+                main_cmd="$main_arg"
+            else
+                set -- "$@" "$main_arg"
+            fi
+            continue
+        fi
+
+        case "$main_arg" in
+            # Held rather than acted on, since which help to print depends on
+            # whether a command turns up later on the line.
+            -h | --help) main_help=1 ;;
             -V | --version)
                 printf '%s\n' "$ZIGM_VERSION"
                 return 0
                 ;;
-            -v | --verbose)
-                ZIGM_VERBOSE=1
-                shift
-                ;;
-            -q | --quiet)
-                ZIGM_QUIET=1
-                shift
-                ;;
-            --refresh)
-                ZIGM_REFRESH=1
-                shift
-                ;;
-            --)
-                shift
-                break
-                ;;
+            -v | --verbose) ZIGM_VERBOSE=1 ;;
+            -q | --quiet) ZIGM_QUIET=1 ;;
+            --refresh) ZIGM_REFRESH=1 ;;
+            --) main_end=1 ;;
             -*)
-                die_usage "unknown option '$1'"
+                # An option before the command can only be zigm's own, so an
+                # unknown one is reported here rather than handed on.
+                [ -n "$main_cmd" ] || die_usage "unknown option '$main_arg'"
+                set -- "$@" "$main_arg"
                 ;;
             *)
-                break
+                if [ -z "$main_cmd" ]; then
+                    main_cmd="$main_arg"
+                else
+                    set -- "$@" "$main_arg"
+                fi
                 ;;
         esac
     done
 
-    if [ "$#" -eq 0 ]; then
+    if [ "$main_help" -eq 1 ]; then
+        [ -n "$main_cmd" ] || {
+            usage
+            return 0
+        }
+        usage_command "$main_cmd" || die_usage "unknown command '$main_cmd'"
+        return 0
+    fi
+
+    if [ -z "$main_cmd" ]; then
         usage >&2
         return "$ZIGM_EX_USAGE"
     fi
-
-    main_cmd="$1"
-    shift
 
     require_platform
     require_dirs
