@@ -1,5 +1,8 @@
 # zigm
 
+[![ci](https://github.com/dk949/zigm/actions/workflows/ci.yml/badge.svg)](https://github.com/dk949/zigm/actions/workflows/ci.yml)
+[![LICENSE](https://img.shields.io/github/license/dk949/zigm?style=flat&color=blue)](https://github.com/dk949/zigm/blob/main/LICENSE)
+
 A Zig toolchain manager: a single POSIX shell script that fetches matched `zig`
 and `zls` versions and exposes one of them on `PATH`.
 
