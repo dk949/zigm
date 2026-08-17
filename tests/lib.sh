@@ -86,6 +86,13 @@ assert_contains() {
     esac
 }
 
+# assert_not_contains <haystack> <needle> [label]
+assert_not_contains() {
+    case "$1" in
+        *"$2"*) fail "${3:-unexpected substring}: '$2' found in '$1'" ;;
+    esac
+}
+
 # assert_status <expected status> <command> [arguments]
 #
 # The command runs in a subshell, so one that exits, as the require_* wrappers

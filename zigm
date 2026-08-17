@@ -921,20 +921,23 @@ install_payload() {
 install_version() {
     require_zig "$1"
 
-    if [ "$ZIGM_NO_ZLS" -eq 1 ]; then
-        # Nothing is asked of the version selection API, since the answer would
-        # only be thrown away.
-        ZIGM_ZLS_VERSION=''
-        warn "zls was skipped, installing zig $ZIGM_ZIG_VERSION alone"
-    else
-        require_zls "$ZIGM_ZIG_VERSION"
-    fi
-
     install_version_dir="$ZIGM_VERSIONS_DIR/$ZIGM_ZIG_VERSION"
 
     if [ -d "$install_version_dir" ] && [ "$ZIGM_FORCE" -eq 0 ]; then
+        # The pairing is left unasked for, since a version that is already
+        # there is not about to be assembled again, and a pairing that has
+        # since disappeared would fail an install with nothing left to do.
         info "zig $ZIGM_ZIG_VERSION is already installed"
     else
+        if [ "$ZIGM_NO_ZLS" -eq 1 ]; then
+            # Nothing is asked of the version selection API, since the answer
+            # would only be thrown away.
+            ZIGM_ZLS_VERSION=''
+            warn "zls was skipped, installing zig $ZIGM_ZIG_VERSION alone"
+        else
+            require_zls "$ZIGM_ZIG_VERSION"
+        fi
+
         install_payload "$install_version_dir"
         if [ -n "$ZIGM_ZLS_VERSION" ]; then
             info "installed zig $ZIGM_ZIG_VERSION with zls $ZIGM_ZLS_VERSION"

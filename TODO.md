@@ -174,13 +174,17 @@
       install made with `--no-zls` can only gain a zls through `--force`.
     - [ ] Settle where it lives, since a file under the version directory sits
           beside the tarball's own contents.
-- [ ] Check whether a version is installed before resolving its zls.
-    - `install_version` resolves the pairing first, so reinstalling an
-      installed version asks the API for an answer it throws away, and fails
-      outright when the pairing has since disappeared rather than saying the
+- [X] Check whether a version is installed before resolving its zls.
+    - `install_version` resolved the pairing first, so reinstalling an
+      installed version asked the API for an answer it threw away, and failed
+      outright when the pairing had since disappeared rather than saying the
       version is already installed.
-    - The `--no-zls` warning is printed in the same place, before anything is
-      known about what is installed.
+    - [X] The pairing is resolved in the branch that assembles the install, so
+          a version that is already there reaches the `current` swap without
+          any network at all.
+    - [X] The `--no-zls` warning moved along with it, since it announces a
+          skipped resolution and has nothing to say about an installed
+          version.
 - [ ] Decide whether concurrent installs need a lock.
     - Two installs of one version share `.new-<version>`, and the second
       removes what the first is assembling.

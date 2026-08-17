@@ -395,12 +395,34 @@ test_install_leaves_an_installed_version_alone() {
     # A second install downloads nothing at all, not even the zls pairing.
     fetch_file() { fail "downloaded $1"; }
     fetch_stdout() { fail 'the zls API was queried'; }
-    ZIGM_NO_ZLS=1
 
     install_version 0.15.1 1 2>/dev/null
     assert_file "$ZIGM_VERSIONS_DIR/0.15.1/marker" 'untouched install'
     # It still ends up active, so `install` names what `current` points at.
     assert_out 0.15.1 find_link_version "$ZIGM_CURRENT_LINK"
+}
+
+test_install_leaves_an_installed_version_alone_without_a_pairing() {
+    zigm_install_setup
+    install_version 0.15.1 0
+
+    # The pairing the version was installed with is gone from the API, which
+    # must not stand in the way of a version that is already there.
+    fetch_stdout() { printf '%s\n' '{"code":0,"message":"no zls"}'; }
+
+    assert_ok install_version 0.15.1 1
+    assert_out 0.15.1 find_link_version "$ZIGM_CURRENT_LINK"
+}
+
+test_install_does_not_warn_about_zls_on_an_installed_version() {
+    zigm_install_setup
+    install_version 0.15.1 0
+    ZIGM_NO_ZLS=1
+    ZIGM_QUIET=0
+
+    zigm_out=$(install_version 0.15.1 0 2>&1)
+    assert_not_contains "$zigm_out" 'zls was skipped' 'warning'
+    assert_contains "$zigm_out" 'already installed' 'note'
 }
 
 test_install_says_a_version_is_already_installed() {
