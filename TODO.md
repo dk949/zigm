@@ -155,7 +155,9 @@
     - `${path%/*}` does the same job with no external command, guarding the
       case of a path holding no slash, where it expands to the path itself.
 - [ ] Keep `shellcheck -S style zigm` clean.
-- [ ] Write README covering install and the `PATH` setup the user must do.
+- [X] Write README covering install and the `PATH` setup the user must do.
+    - Also covers the requirements, every command and flag, the on disk layout,
+      and how to run the tests.
 - [ ] Investigate whether `sed` alone can replace `jq`, dropping the last hard
       dependency.
     - [ ] Move config to a simpler to read and write format like `conf`.
