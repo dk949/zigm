@@ -134,6 +134,18 @@
           already, or when nothing was active, so a pinned release is never
           moved out from under the user.
 - [X] Drop exit code 3, since no subcommand is a stub any more.
+- [X] Keep every recursive removal away from the root directory.
+    - [X] `is_removable` refuses the root, however it is spelled, and `clean`
+          asks it about the one directory a user names.
+        - `pwd -P` may print the root as `//`, which it is free to do for
+          exactly two leading slashes and which bash does.
+        - `cd ''` is unspecified and succeeds under dash and zsh, so an empty
+          path is refused before `cd` sees it.
+    - [X] The paths built from a version name guard their parts with
+          `${var:?}` instead, since a name that passed `is_version_name`
+          already keeps them a component below the versions directory.
+    - [X] The test for the refusal replaces `rm`, so a regression fails the
+          test rather than the machine.
 - [X] Implement `clean`.
     - The whole cache directory goes, since it holds only the download index
       and tarballs, both refetched on demand.

@@ -323,8 +323,52 @@ test_uninstall_rejects_a_version_reaching_out_of_the_versions_directory() {
 }
 
 # ---------------------------------------------------------------------------
+# Recursive removals
+# ---------------------------------------------------------------------------
+
+test_is_removable_refuses_the_root_directory() {
+    assert_fails is_removable /
+    assert_fails is_removable //
+    assert_fails is_removable /.
+    assert_fails is_removable /..
+}
+
+test_is_removable_refuses_a_link_to_the_root() {
+    rm -f "$ZIGM_TMP/root-link"
+    ln -s / "$ZIGM_TMP/root-link"
+    assert_fails is_removable "$ZIGM_TMP/root-link"
+}
+
+test_is_removable_refuses_what_is_not_there() {
+    assert_fails is_removable "$ZIGM_TMP/nowhere"
+    assert_fails is_removable ''
+}
+
+test_is_removable_accepts_a_directory_below_the_root() {
+    mkdir -p "$ZIGM_TMP/removable"
+    assert_ok is_removable "$ZIGM_TMP/removable"
+    assert_ok is_removable "$ZIGM_TMP/removable/."
+}
+
+# ---------------------------------------------------------------------------
 # clean
 # ---------------------------------------------------------------------------
+
+test_clean_refuses_a_cache_directory_of_root() {
+    # `rm` is replaced rather than trusted, so a regression here fails the test
+    # instead of the machine. It records the call, since a stub that failed the
+    # test would exit 1 and read as the error the assertion is looking for.
+    # shellcheck disable=SC2329 # cmd_clean calls it, if it is broken.
+    rm() { printf '%s\n' "$*" >>"$ZIGM_TMP/rm-calls"; }
+
+    # shellcheck disable=SC2034 # cmd_clean reads it.
+    ZIGM_CACHE_DIR=/
+    assert_status "$ZIGM_EX_ERROR" cmd_clean
+    assert_contains "$(cmd_clean 2>&1)" 'refusing to remove' 'message'
+
+    [ ! -f "$ZIGM_TMP/rm-calls" ] ||
+        fail "rm was called: $(cat "$ZIGM_TMP/rm-calls")"
+}
 
 test_clean_removes_the_cache_directory() {
     mkdir -p "$ZIGM_TMP/cache"

@@ -179,6 +179,30 @@ parent_dir() {
     printf '%s\n' "${parent_dir_head:-/}"
 }
 
+# is_removable <directory>
+#
+# False when a directory is the root, however it is spelled, and false when it
+# cannot be reached at all. `cd -P` settles the spelling, so `/`, `//`, `/.`,
+# and a symlink to any of them are all caught.
+#
+# Every recursive removal zigm makes is of a path it built itself out of a
+# checked version name, so this guards only the one directory a user names,
+# the cache. It is cheap enough to be worth having anyway.
+is_removable() {
+    # An empty path is refused here rather than by `cd`, which POSIX leaves
+    # unspecified for one and which dash and zsh take as a no-op success.
+    [ -n "$1" ] || return 1
+
+    is_removable_real=$(CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P) ||
+        return 1
+
+    # A path of exactly two leading slashes is the implementation's to define,
+    # so `pwd -P` may name the root `//`, as it does under bash.
+    case "$is_removable_real" in
+        '' | / | //) return 1 ;;
+    esac
+}
+
 # base_dir <kind> <os> <home>
 #
 # Prints the zigm directory for `kind`, one of data, cache, or config. The os
@@ -846,7 +870,10 @@ install_tarball() {
 # place. Requires require_zig, and require_zls unless ZIGM_NO_ZLS is set.
 install_payload() {
     install_payload_dir="$1"
-    install_payload_scratch="$ZIGM_VERSIONS_DIR/.new-$ZIGM_ZIG_VERSION"
+
+    # Both parts are refused when empty, so the scratch paths below, which are
+    # removed recursively, cannot collapse towards the root.
+    install_payload_scratch="${ZIGM_VERSIONS_DIR:?}/.new-${ZIGM_ZIG_VERSION:?}"
     install_payload_old="$ZIGM_VERSIONS_DIR/.old-$ZIGM_ZIG_VERSION"
     install_payload_root="$install_payload_scratch/root"
 
@@ -988,7 +1015,10 @@ cmd_uninstall() {
     [ "$#" -eq 1 ] || die_usage 'uninstall takes exactly one version'
     is_version_name "$1" || die_usage "'$1' is not a version"
 
-    cmd_uninstall_dir="$ZIGM_VERSIONS_DIR/$1"
+    # is_version_name has already refused an empty name and a name holding a
+    # slash or a dot, so a non-empty versions directory keeps the removal below
+    # away from the root.
+    cmd_uninstall_dir="${ZIGM_VERSIONS_DIR:?}/$1"
     [ -d "$cmd_uninstall_dir" ] || die "zig $1 is not installed"
 
     # Drop the link first, so an interrupted removal cannot leave `current`
@@ -1142,6 +1172,11 @@ cmd_clean() {
         note 'the cache is already empty'
         return 0
     fi
+
+    # This is the one directory a user hands to a recursive removal, so a
+    # ZIGM_CACHE_DIR of `/` is refused rather than obeyed.
+    is_removable "$ZIGM_CACHE_DIR" ||
+        die "refusing to remove $ZIGM_CACHE_DIR"
 
     rm -rf -- "$ZIGM_CACHE_DIR" || die "cannot remove $ZIGM_CACHE_DIR"
     info "removed $ZIGM_CACHE_DIR"
