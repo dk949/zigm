@@ -6,6 +6,8 @@
 # directory and stamped fresh, `fetch_file` is replaced with a stub serving
 # tarballs built on the fly, and `fetch_stdout` answers for the zls API. The
 # tarballs are real, so tar and xz do the same work they do in an install.
+# Building one needs a compressor, which is a separate question from the
+# decompressor zigm picks: see zigm_find_packer below.
 
 # The stub functions below are called by the code under test, never directly,
 # and the globals set below are read by the sourced zigm, not by this file.
@@ -26,14 +28,70 @@ zigm_write_file() {
     printf '%s\n' "$2" >"$1" || fail "cannot write $1"
 }
 
+# zigm_can_pack <xz command>
+#
+# True when that xz compresses as well as decompresses. busybox's applet only
+# decompresses, which is all zigm needs but not all the fixtures need.
+zigm_can_pack() {
+    printf 'probe\n' | "$1" -c 2>/dev/null | "$1" -dc 2>/dev/null |
+        grep -q '^probe$'
+}
+
+# zigm_tar_can_pack
+#
+# True when tar can compress with -J on its own.
+zigm_tar_can_pack() {
+    zigm_probe=$ZIGM_TMP/packer
+    rm -rf "$zigm_probe"
+    mkdir -p "$zigm_probe/dir" || return 1
+    printf 'probe\n' >"$zigm_probe/dir/file" || return 1
+    (cd "$zigm_probe" && tar -cJf probe.tar.xz dir) 2>/dev/null &&
+        (cd "$zigm_probe" && tar -tJf probe.tar.xz) >/dev/null 2>&1
+}
+
+# Prints how to build a tar.xz: an xz that compresses, named by path, or `tar`
+# when tar's own -J does the job. ZIGM_XZ says nothing about this, since it is
+# picked for decompression alone, and under busybox the two differ.
+zigm_find_packer() {
+    zigm_can_pack xz && {
+        printf 'xz\n'
+        return 0
+    }
+
+    # busybox's shell reaches its own applets before PATH, so an xz that does
+    # compress has to be named by path to be reached at all.
+    zigm_ifs=$IFS
+    IFS=:
+    for zigm_dir in $PATH; do
+        IFS=$zigm_ifs
+        if [ -x "$zigm_dir/xz" ] && zigm_can_pack "$zigm_dir/xz"; then
+            printf '%s\n' "$zigm_dir/xz"
+            return 0
+        fi
+        IFS=:
+    done
+    IFS=$zigm_ifs
+
+    zigm_tar_can_pack && {
+        printf 'tar\n'
+        return 0
+    }
+
+    return 1
+}
+
+# Probed once, since every fixture build needs it. An empty value means nothing
+# here can compress, which zigm_make_fixtures reports.
+zigm_packer=$(zigm_find_packer) || zigm_packer=''
+
 # zigm_pack <output> <directory> <entry>
 #
 # Builds a tar.xz of one entry of a directory, the way upstream ships one.
 zigm_pack() {
-    case "$ZIGM_XZ" in
-        xz) (cd "$2" && tar -cf - "$3") | xz -c >"$1" ;;
+    case "$zigm_packer" in
+        '') return 1 ;;
         tar) (cd "$2" && tar -cJf "$1" "$3") ;;
-        *) return 1 ;;
+        *) (cd "$2" && tar -cf - "$3") | "$zigm_packer" -c >"$1" ;;
     esac
 }
 
@@ -54,6 +112,9 @@ zigm_make_fixtures() {
     chmod +x "$zigm_fix/zls/zls"
     zigm_write_file "$zigm_fix/zls/LICENSE" 'zls license'
     zigm_write_file "$zigm_fix/zls/README.md" 'zls readme'
+
+    [ -n "$zigm_packer" ] ||
+        fail 'no xz that compresses found, install xz or a tar with -J'
 
     zigm_pack "$zigm_fix/zig.tar.xz" "$zigm_fix/zig" zig-x86_64-linux-0.15.1 ||
         fail 'cannot build the zig fixture tarball'
