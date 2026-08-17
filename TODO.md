@@ -31,6 +31,8 @@
     - [ ] Extend the coverage as each remaining subcommand lands.
         - [X] `tests/test_local.sh` covers the commands that only read local
               state, end to end over fake installs made of stub executables.
+        - [X] `list-remote` is covered in `tests/test_resolve.sh`, since it
+              reads the cached index the resolution tests already fixture.
 - [X] Run the tests, `shellcheck`, and a syntax check in CI.
     - [X] GitHub Actions, on push and pull request.
     - [X] Linux matrix of dash, bash, mksh, ksh, busybox ash, and zsh in sh
@@ -65,11 +67,14 @@
           reads as a space and rejects with a 400.
     - [X] Report the API's own message when it has no pairing to offer, since
           it returns those as a json object with a 200.
-- [ ] Decide what `install` should do when no zls pairs with a zig version.
+- [X] Decide what `install` should do when no zls pairs with a zig version.
     - The API has a build for every tagged release, but a fresh nightly can
       resolve to an older zls or to nothing at all.
-    - Options are to fail, or to install zig alone and warn.
+    - Settled: the install fails unless `--no-zls` was passed, in which case
+      zig is installed alone and a warning says zls was skipped.
 - [ ] Implement `install`.
+    - [ ] Add the `--no-zls` flag, which is what makes an install without a
+          paired zls succeed rather than fail.
     - The layout the local commands assume is `versions/<version>/`, holding
       the zig and zls binaries beside zig's `lib` directory, since zig finds
       that directory relative to its own path.
@@ -91,7 +96,13 @@
     - [X] Versions sort oldest first, with a `-dev` build ahead of the release
           it leads up to.
     - [X] The active version is starred, and an empty list says so on stderr.
-- [ ] Implement `list-remote`.
+- [X] Implement `list-remote`.
+    - [X] Only versions the index carries a build of for this platform are
+          listed, since the rest cannot be installed here anyway.
+    - [X] `master` is listed under the version it resolves to today, annotated
+          with `(master)`, which is the name it would be installed under.
+    - [X] The order matches `list`, oldest first, and the active version keeps
+          its star, with an `i` on one that is installed but not active.
 - [X] Implement `which` and `current`.
     - [X] `which` prints the path under `versions`, not the one through
           `current`, since that names the version the binary belongs to.
@@ -99,7 +110,7 @@
 - [X] Implement `clean`.
     - The whole cache directory goes, since it holds only the download index
       and tarballs, both refetched on demand.
-- [ ] Replace the `dirname --` call in `fetch_cached`.
+- [X] Replace the `dirname --` call in `fetch_cached`.
     - Busybox parses its own arguments per applet, so `--` may well be read as
       the path rather than as the end of the options.
     - `${path%/*}` does the same job with no external command, guarding the

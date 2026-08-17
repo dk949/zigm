@@ -102,7 +102,7 @@ commands:
   use <version>        point 'current' at an installed version
   uninstall <version>  remove an installed version
   list                 list installed versions, starring the active one
-  list-remote          list versions available upstream
+  list-remote          list upstream versions, 'i' marks an installed one
   which [name]         print the path of an active binary, default 'zig'
   current              print the active version
   update               reinstall 'master' at its newest resolved version
@@ -160,6 +160,24 @@ normalize_arch() {
         ppc64le) printf 'powerpc64le\n' ;;
         *) printf '%s\n' "$1" ;;
     esac
+}
+
+# parent_dir <path>
+#
+# Prints the directory holding a path, standing in for `dirname`. Busybox parses
+# its own arguments per applet, so a `dirname --` may well read the `--` as the
+# path rather than as the end of the options.
+parent_dir() {
+    case "$1" in
+        */*) ;;
+        # A path with no slash names something in the working directory.
+        *) printf '.\n' && return 0 ;;
+    esac
+
+    parent_dir_head="${1%/*}"
+
+    # A path directly under the root strips to nothing.
+    printf '%s\n' "${parent_dir_head:-/}"
 }
 
 # base_dir <kind> <os> <home>
@@ -381,7 +399,7 @@ fetch_cached() {
         return 0
     fi
 
-    fetch_cached_dir=$(dirname -- "$2")
+    fetch_cached_dir=$(parent_dir "$2")
     mkdir -p "$fetch_cached_dir" || die "cannot create $fetch_cached_dir"
 
     # Download beside the target and move it into place, so an interrupted
@@ -463,6 +481,24 @@ find_release_version() {
     else
         printf '%s\n' "$2"
     fi
+}
+
+# find_remote_versions <index file> <arch> <os>
+#
+# Prints the versions the index carries a build of for this platform, one per
+# line, in index order. The `master` entry is printed as the concrete version it
+# names today, since that is the name it would be installed under.
+find_remote_versions() {
+    find_remote_versions_keys=$(target_candidates "$2" "$3")
+
+    jq -e -r --arg keys "$find_remote_versions_keys" '
+        ($keys | split("\n")) as $candidates
+        | to_entries[]
+        | . as $entry
+        | select($entry.value | type == "object")
+        | select(any($candidates[]; . as $key | $entry.value | has($key)))
+        | $entry.value.version // $entry.key
+    ' "$1" 2>/dev/null
 }
 
 # normalize_query <value>
@@ -736,7 +772,42 @@ cmd_list_remote() {
     [ "$#" -eq 0 ] || die_usage 'list-remote takes no arguments'
     require_downloader
     require_jq
-    not_implemented list-remote
+    require_index
+
+    # The nightly is listed under the version it resolves to today, so it needs
+    # naming separately for the annotation. An index without a usable master
+    # entry is not fatal here, it only costs the annotation.
+    cmd_list_remote_master=''
+    if cmd_list_remote_json=$(find_release "$ZIGM_INDEX_FILE" master); then
+        cmd_list_remote_master=$(find_release_version \
+            "$cmd_list_remote_json" master) || cmd_list_remote_master=''
+    fi
+
+    cmd_list_remote_all=$(find_remote_versions "$ZIGM_INDEX_FILE" \
+        "$ZIGM_ARCH" "$ZIGM_OS" | sort_versions)
+    [ -n "$cmd_list_remote_all" ] ||
+        die "the download index has no build for $ZIGM_ARCH-$ZIGM_OS"
+
+    cmd_list_remote_active=$(find_link_version "$ZIGM_CURRENT_LINK") ||
+        cmd_list_remote_active=''
+
+    # The order and the marks match `list`: a star on the active version, and
+    # here an `i` on one that is installed but not active.
+    printf '%s\n' "$cmd_list_remote_all" | while IFS= read -r cmd_list_remote_v; do
+        if [ "$cmd_list_remote_v" = "$cmd_list_remote_active" ]; then
+            cmd_list_remote_mark='*'
+        elif [ -d "$ZIGM_VERSIONS_DIR/$cmd_list_remote_v" ]; then
+            cmd_list_remote_mark='i'
+        else
+            cmd_list_remote_mark=' '
+        fi
+
+        if [ "$cmd_list_remote_v" = "$cmd_list_remote_master" ]; then
+            printf '%s %s (master)\n' "$cmd_list_remote_mark" "$cmd_list_remote_v"
+        else
+            printf '%s %s\n' "$cmd_list_remote_mark" "$cmd_list_remote_v"
+        fi
+    done
 }
 
 cmd_which() {

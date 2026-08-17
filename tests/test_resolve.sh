@@ -219,6 +219,17 @@ test_zls_url_encodes_a_master_version() {
 # Cache
 # ---------------------------------------------------------------------------
 
+test_parent_dir_strips_the_last_component() {
+    assert_out /a/b parent_dir /a/b/c
+    assert_out a/b parent_dir a/b/c
+    assert_out / parent_dir /c
+}
+
+test_parent_dir_handles_a_path_with_no_slash() {
+    assert_out . parent_dir index.json
+    assert_out . parent_dir --
+}
+
 test_find_epoch_is_a_number() {
     zigm_out=$(find_epoch)
     assert_ne '' "$zigm_out" 'epoch'
@@ -443,6 +454,91 @@ test_require_zls_dies_when_the_platform_has_no_build() {
 
     assert_status "$ZIGM_EX_ERROR" require_zls 0.15.1
     assert_contains "$(require_zls 0.15.1 2>&1)" 's390x-linux' 'message'
+}
+
+# ---------------------------------------------------------------------------
+# list-remote
+# ---------------------------------------------------------------------------
+
+# Points list-remote at scratch space: a cached index and an empty data
+# directory. The downloader check is stubbed out, since a cache hit downloads
+# nothing and the command should still run on a machine without curl.
+zigm_remote_setup() {
+    zigm_cache_index
+    ZIGM_VERSIONS_DIR="$ZIGM_TMP/remote/versions"
+    ZIGM_CURRENT_LINK="$ZIGM_TMP/remote/current"
+    rm -rf "$ZIGM_TMP/remote"
+    mkdir -p "$ZIGM_VERSIONS_DIR"
+    require_downloader() { :; }
+}
+
+test_find_remote_versions_lists_the_builds_for_the_platform() {
+    zigm_write_index "$ZIGM_TMP/index.json"
+    assert_out '0.17.0-dev.1778+767d25269
+0.15.1
+0.13.0' find_remote_versions "$ZIGM_TMP/index.json" x86_64 linux
+}
+
+test_find_remote_versions_covers_both_spellings_of_an_arch() {
+    zigm_write_index "$ZIGM_TMP/index.json"
+    assert_out '0.17.0-dev.1778+767d25269
+0.15.1
+0.13.0' find_remote_versions "$ZIGM_TMP/index.json" armv7a linux
+    assert_out 0.9.0 find_remote_versions "$ZIGM_TMP/index.json" x86 linux
+}
+
+test_find_remote_versions_skips_a_version_without_a_build() {
+    zigm_write_index "$ZIGM_TMP/index.json"
+    assert_out 0.13.0 find_remote_versions "$ZIGM_TMP/index.json" x86_64 macos
+}
+
+test_find_remote_versions_fails_when_the_platform_has_no_build() {
+    zigm_write_index "$ZIGM_TMP/index.json"
+    assert_fails find_remote_versions "$ZIGM_TMP/index.json" s390x linux
+}
+
+test_find_remote_versions_fails_on_a_broken_index() {
+    printf 'not json\n' >"$ZIGM_TMP/broken.json"
+    assert_fails find_remote_versions "$ZIGM_TMP/broken.json" x86_64 linux
+    assert_fails find_remote_versions "$ZIGM_TMP/missing.json" x86_64 linux
+}
+
+test_list_remote_orders_oldest_first_and_names_master() {
+    zigm_remote_setup
+    assert_out '  0.13.0
+  0.15.1
+  0.17.0-dev.1778+767d25269 (master)' cmd_list_remote
+}
+
+test_list_remote_marks_installed_and_active_versions() {
+    zigm_remote_setup
+    mkdir -p "$ZIGM_VERSIONS_DIR/0.13.0" "$ZIGM_VERSIONS_DIR/0.15.1"
+    swap_link "$ZIGM_VERSIONS_DIR/0.15.1" "$ZIGM_CURRENT_LINK" ||
+        fail 'cannot activate 0.15.1'
+
+    assert_out 'i 0.13.0
+* 0.15.1
+  0.17.0-dev.1778+767d25269 (master)' cmd_list_remote
+}
+
+test_list_remote_marks_an_installed_nightly() {
+    zigm_remote_setup
+    mkdir -p "$ZIGM_VERSIONS_DIR/0.17.0-dev.1778+767d25269"
+    assert_out '  0.13.0
+  0.15.1
+i 0.17.0-dev.1778+767d25269 (master)' cmd_list_remote
+}
+
+test_list_remote_dies_when_the_platform_has_no_build() {
+    zigm_remote_setup
+    ZIGM_ARCH=s390x
+    assert_status "$ZIGM_EX_ERROR" cmd_list_remote
+    assert_contains "$(cmd_list_remote 2>&1)" 's390x-linux' 'message'
+}
+
+test_list_remote_takes_no_arguments() {
+    zigm_remote_setup
+    assert_status "$ZIGM_EX_USAGE" cmd_list_remote 0.15.1
 }
 
 run_tests
