@@ -33,6 +33,8 @@
               state, end to end over fake installs made of stub executables.
         - [X] `list-remote` is covered in `tests/test_resolve.sh`, since it
               reads the cached index the resolution tests already fixture.
+        - [X] `tests/test_install.sh` covers install and update, over real
+              tarballs built at test time and a stubbed downloader.
 - [X] Run the tests, `shellcheck`, and a syntax check in CI.
     - [X] GitHub Actions, on push and pull request.
     - [X] Linux matrix of dash, bash, mksh, ksh, busybox ash, and zsh in sh
@@ -72,14 +74,33 @@
       resolve to an older zls or to nothing at all.
     - Settled: the install fails unless `--no-zls` was passed, in which case
       zig is installed alone and a warning says zls was skipped.
-- [ ] Implement `install`.
-    - [ ] Add the `--no-zls` flag, which is what makes an install without a
+- [X] Implement `install`.
+    - [X] Add the `--no-zls` flag, which is what makes an install without a
           paired zls succeed rather than fail.
+        - Nothing is asked of the version selection API in that case, since the
+          answer would only be thrown away.
     - The layout the local commands assume is `versions/<version>/`, holding
       the zig and zls binaries beside zig's `lib` directory, since zig finds
       that directory relative to its own path.
     - A scratch directory used while unpacking must be dot prefixed, since
       `list` skips those and would otherwise report a half finished install.
+    - [X] Settle what an install of a version that is already there does.
+        - Settled: it says so and stops, and `--force` is how a reinstall is
+          asked for.
+    - [X] A finished install activates the version, with `--no-use` to skip
+          that.
+    - [X] Only the binary is taken out of the zls tarball, since it also ships
+          a LICENSE and a README that would otherwise land on zig's.
+    - [X] The tarballs are downloaded into the scratch directory and removed
+          once unpacked, so the cache holds only the index and a failed install
+          leaves nothing anywhere.
+    - [X] Verify a download against the shasum upstream published for it.
+        - A mismatch is fatal, while nothing to compare against, from a missing
+          tool or a missing shasum, is a warning.
+        - The tools disagree on where the digest sits in their output, so it is
+          picked out by its shape rather than by its position.
+    - [X] A reinstall moves the old version aside and puts it back when the
+          swap fails, so a failure cannot lose a working install.
 - [X] Implement `use` via an atomic `current` symlink swap.
     - [X] The swap goes through a scratch symlink beside `current`.
     - [X] `mv` moves the scratch link inside the old target unless told not
@@ -106,7 +127,13 @@
 - [X] Implement `which` and `current`.
     - [X] `which` prints the path under `versions`, not the one through
           `current`, since that names the version the binary belongs to.
-- [ ] Implement `update`.
+- [X] Implement `update`.
+    - [X] It is an install of master that always refetches the index, and it
+          takes `--no-zls` and `--force` for the same reasons install does.
+    - [X] `current` follows the new nightly only when it pointed at a nightly
+          already, or when nothing was active, so a pinned release is never
+          moved out from under the user.
+- [X] Drop exit code 3, since no subcommand is a stub any more.
 - [X] Implement `clean`.
     - The whole cache directory goes, since it holds only the download index
       and tarballs, both refetched on demand.

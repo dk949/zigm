@@ -22,7 +22,6 @@ ZIGM_VERSION='0.1.0-dev'
 # Exit codes.
 ZIGM_EX_ERROR=1
 ZIGM_EX_USAGE=2
-ZIGM_EX_UNIMPLEMENTED=3
 
 # Verbosity, set by the global flags.
 ZIGM_VERBOSE=0
@@ -81,11 +80,6 @@ debug() {
     fi
 }
 
-not_implemented() {
-    err "'$1' is not implemented yet"
-    exit "$ZIGM_EX_UNIMPLEMENTED"
-}
-
 have() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -105,8 +99,13 @@ commands:
   list-remote          list upstream versions, 'i' marks an installed one
   which [name]         print the path of an active binary, default 'zig'
   current              print the active version
-  update               reinstall 'master' at its newest resolved version
+  update               install 'master' at its newest resolved version
   clean                remove the cache directory
+
+install and update options:
+      --no-zls         install zig alone rather than failing when no zls pairs
+      --no-use         leave 'current' alone, install only ('install' only)
+      --force          reinstall a version that is already installed
 
 global options:
   -h, --help           print this help and exit
@@ -122,7 +121,7 @@ environment:
   ZIGM_INDEX_TTL       seconds a cached download index stays fresh
 
 exit codes:
-  0 success, 1 error, 2 usage error, 3 command not implemented
+  0 success, 1 error, 2 usage error
 EOF
 }
 
@@ -547,7 +546,6 @@ require_zig() {
 
     # An entry without one is rare but real, and checksum verification is a
     # warning rather than an error, so an empty shasum is not fatal here.
-    # shellcheck disable=SC2034 # read by install, which is not written yet.
     ZIGM_ZIG_SHASUM=$(find_target_field "$require_zig_json" \
         "$ZIGM_ZIG_TARGET" shasum) || ZIGM_ZIG_SHASUM=''
 
@@ -582,7 +580,6 @@ require_zls() {
         "$ZIGM_ZLS_TARGET" tarball) ||
         die "zls $ZIGM_ZLS_VERSION has no tarball for $ZIGM_ZLS_TARGET"
 
-    # shellcheck disable=SC2034 # read by install, which is not written yet.
     ZIGM_ZLS_SHASUM=$(find_target_field "$require_zls_json" \
         "$ZIGM_ZLS_TARGET" shasum) || ZIGM_ZLS_SHASUM=''
 
@@ -687,6 +684,246 @@ swap_link() {
 }
 
 # ---------------------------------------------------------------------------
+# Install
+#
+# An install is assembled in a dot prefixed scratch directory beside the
+# versions, then moved into place with a rename, so a version directory is
+# never half written. `list` skips dot prefixed entries, so an interrupted
+# install is invisible until the next one clears it away.
+# ---------------------------------------------------------------------------
+
+# find_checksum <tool> <file>
+#
+# Prints the sha256 of a file as lowercase hex. The tools disagree on where the
+# digest sits in their output, GNU `cksum` printing it first and BSD `cksum`
+# last, so it is picked out by its shape rather than by its position.
+find_checksum() {
+    case "$1" in
+        sha256sum) find_checksum_out=$(sha256sum "$2") ;;
+        shasum) find_checksum_out=$(shasum -a 256 "$2") ;;
+        openssl) find_checksum_out=$(openssl dgst -sha256 "$2") ;;
+        cksum) find_checksum_out=$(cksum -a sha256 "$2") ;;
+        *) return 1 ;;
+    esac || return 1
+
+    find_checksum_out=$(printf '%s\n' "$find_checksum_out" | awk '{
+        for (i = 1; i <= NF; i++) {
+            if (length($i) == 64 && $i ~ /^[0-9a-fA-F]+$/) {
+                print tolower($i)
+                exit
+            }
+        }
+    }')
+
+    [ -n "$find_checksum_out" ] || return 1
+    printf '%s\n' "$find_checksum_out"
+}
+
+# verify_download <file> <expected shasum> <label>
+#
+# Checks a downloaded file against the shasum upstream published for it. A
+# mismatch is fatal, while having nothing to compare against, either because no
+# tool was found or because the index carries no shasum, is only a warning.
+# Requires require_sha256.
+verify_download() {
+    [ -n "$ZIGM_SHA256" ] || return 0
+
+    if [ -z "$2" ]; then
+        warn "$3 has no published checksum, it was not verified"
+        return 0
+    fi
+
+    verify_download_got=$(find_checksum "$ZIGM_SHA256" "$1") || {
+        warn "cannot checksum $3 with $ZIGM_SHA256, it was not verified"
+        return 0
+    }
+
+    verify_download_want=$(printf '%s\n' "$2" | tr '[:upper:]' '[:lower:]')
+    [ "$verify_download_got" = "$verify_download_want" ] ||
+        die "checksum mismatch for $3, expected $verify_download_want, got $verify_download_got"
+
+    debug "checksum ok: $3"
+}
+
+# unpack_tarball <tarball> <destination directory>
+#
+# Requires require_extractor. When xz is a separate binary the pipe hides its
+# exit status, which the caller catches by checking the payload afterwards.
+unpack_tarball() {
+    case "$ZIGM_XZ" in
+        xz) xz -dc <"$1" | tar -xf - -C "$2" ;;
+        tar) tar -xJf "$1" -C "$2" ;;
+        *) return 1 ;;
+    esac
+}
+
+# find_extract_root <directory>
+#
+# Prints the directory holding the unpacked files. A zig tarball unpacks into a
+# single directory named after the release, while a zls tarball unpacks its
+# files directly, so the one is stripped and the other is not.
+find_extract_root() {
+    [ -d "$1" ] || return 1
+
+    find_extract_root_only=''
+    for find_extract_root_path in "$1"/*; do
+        # An unmatched glob expands to itself, which names nothing.
+        [ -e "$find_extract_root_path" ] || return 1
+
+        if [ -n "$find_extract_root_only" ]; then
+            printf '%s\n' "$1"
+            return 0
+        fi
+        find_extract_root_only="$find_extract_root_path"
+    done
+
+    if [ -d "$find_extract_root_only" ]; then
+        printf '%s\n' "$find_extract_root_only"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+# move_contents <source directory> <destination directory>
+#
+# Moves everything in the source into the destination, replacing entries of the
+# same name.
+move_contents() {
+    [ -d "$1" ] && [ -d "$2" ] || return 1
+
+    for move_contents_path in "$1"/*; do
+        [ -e "$move_contents_path" ] || return 1
+
+        # The destination is checked rather than trusted, since an empty one
+        # would turn the removal below into an `rm -rf /`.
+        move_contents_name="${move_contents_path##*/}"
+        rm -rf -- "${2:?}/$move_contents_name" || return 1
+        mv -f -- "$move_contents_path" "$2/$move_contents_name" || return 1
+    done
+}
+
+# install_tarball <name> <version> <url> <shasum> <scratch> <root> <take>
+#
+# Downloads, verifies, and unpacks one tarball into the root being assembled.
+# The download lands in the scratch directory rather than in the cache, since
+# it is removed as soon as it is unpacked and the scratch directory is the one
+# place an interrupted install leaves nothing behind.
+#
+# `take` is `all` for the whole payload, or the name of the one file to take.
+# zig is unpacked whole, since it owns the layout of a version directory, and
+# zls contributes its binary alone, so that its README and its LICENSE cannot
+# land on zig's.
+install_tarball() {
+    install_tarball_file="$5/$1.tar.xz"
+    install_tarball_out="$5/$1"
+
+    info "downloading $1 $2"
+    fetch_file "$3" "$install_tarball_file" || die "cannot download $3"
+    verify_download "$install_tarball_file" "$4" "$1 $2"
+
+    mkdir -p "$install_tarball_out" || die "cannot create $install_tarball_out"
+    unpack_tarball "$install_tarball_file" "$install_tarball_out" ||
+        die "cannot unpack the $1 tarball"
+    rm -f -- "$install_tarball_file"
+
+    install_tarball_from=$(find_extract_root "$install_tarball_out") ||
+        die "the $1 tarball unpacked to nothing"
+
+    if [ "$7" = all ]; then
+        move_contents "$install_tarball_from" "$6" ||
+            die "cannot assemble the $1 $2 install"
+    else
+        [ -f "$install_tarball_from/$7" ] ||
+            die "the $1 tarball held no $7"
+        mv -f -- "$install_tarball_from/$7" "$6/$7" ||
+            die "cannot assemble the $1 $2 install"
+    fi
+}
+
+# install_payload <version directory>
+#
+# Assembles a version directory from the resolved tarballs and moves it into
+# place. Requires require_zig, and require_zls unless ZIGM_NO_ZLS is set.
+install_payload() {
+    install_payload_dir="$1"
+    install_payload_scratch="$ZIGM_VERSIONS_DIR/.new-$ZIGM_ZIG_VERSION"
+    install_payload_old="$ZIGM_VERSIONS_DIR/.old-$ZIGM_ZIG_VERSION"
+    install_payload_root="$install_payload_scratch/root"
+
+    rm -rf -- "$install_payload_scratch" ||
+        die "cannot clear $install_payload_scratch"
+    mkdir -p "$install_payload_root" ||
+        die "cannot create $install_payload_root"
+
+    install_tarball zig "$ZIGM_ZIG_VERSION" "$ZIGM_ZIG_TARBALL" \
+        "$ZIGM_ZIG_SHASUM" "$install_payload_scratch" \
+        "$install_payload_root" all
+    [ -x "$install_payload_root/zig" ] ||
+        die 'the zig tarball held no zig binary'
+
+    if [ -n "$ZIGM_ZLS_VERSION" ]; then
+        install_tarball zls "$ZIGM_ZLS_VERSION" "$ZIGM_ZLS_TARBALL" \
+            "$ZIGM_ZLS_SHASUM" "$install_payload_scratch" \
+            "$install_payload_root" zls
+        [ -x "$install_payload_root/zls" ] ||
+            die 'the zls binary is not executable'
+    fi
+
+    # A reinstall moves the old directory aside rather than deleting it, so the
+    # version is missing for one rename instead of for the whole swap.
+    rm -rf -- "$install_payload_old" || die "cannot clear $install_payload_old"
+    if [ -d "$install_payload_dir" ]; then
+        mv -f -- "$install_payload_dir" "$install_payload_old" ||
+            die "cannot replace $install_payload_dir"
+    fi
+
+    mv -f -- "$install_payload_root" "$install_payload_dir" || {
+        # Put the old version back, since the new one never arrived.
+        [ ! -d "$install_payload_old" ] ||
+            mv -f -- "$install_payload_old" "$install_payload_dir"
+        die "cannot move the install into $install_payload_dir"
+    }
+
+    rm -rf -- "$install_payload_scratch" "$install_payload_old"
+}
+
+# install_version <requested version> <activate, 0 or 1>
+#
+# Resolves a version, installs it unless it is already there, and points
+# `current` at it when asked. Reads ZIGM_NO_ZLS and ZIGM_FORCE.
+install_version() {
+    require_zig "$1"
+
+    if [ "$ZIGM_NO_ZLS" -eq 1 ]; then
+        # Nothing is asked of the version selection API, since the answer would
+        # only be thrown away.
+        ZIGM_ZLS_VERSION=''
+        warn "zls was skipped, installing zig $ZIGM_ZIG_VERSION alone"
+    else
+        require_zls "$ZIGM_ZIG_VERSION"
+    fi
+
+    install_version_dir="$ZIGM_VERSIONS_DIR/$ZIGM_ZIG_VERSION"
+
+    if [ -d "$install_version_dir" ] && [ "$ZIGM_FORCE" -eq 0 ]; then
+        info "zig $ZIGM_ZIG_VERSION is already installed"
+    else
+        install_payload "$install_version_dir"
+        if [ -n "$ZIGM_ZLS_VERSION" ]; then
+            info "installed zig $ZIGM_ZIG_VERSION with zls $ZIGM_ZLS_VERSION"
+        else
+            info "installed zig $ZIGM_ZIG_VERSION"
+        fi
+    fi
+
+    [ "$2" -eq 1 ] || return 0
+
+    swap_link "$install_version_dir" "$ZIGM_CURRENT_LINK" ||
+        die "cannot point $ZIGM_CURRENT_LINK at $install_version_dir"
+    info "now using zig $ZIGM_ZIG_VERSION"
+}
+
+# ---------------------------------------------------------------------------
 # Commands
 #
 # Each command declares the tools it needs, so a missing dependency fails
@@ -694,16 +931,37 @@ swap_link() {
 # ---------------------------------------------------------------------------
 
 cmd_install() {
-    [ "$#" -eq 1 ] || die_usage 'install takes exactly one version'
+    ZIGM_NO_ZLS=0
+    ZIGM_FORCE=0
+    cmd_install_use=1
+    cmd_install_version=''
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --no-zls) ZIGM_NO_ZLS=1 ;;
+            --no-use) cmd_install_use=0 ;;
+            --force) ZIGM_FORCE=1 ;;
+            -*) die_usage "unknown option '$1' for install" ;;
+            *)
+                [ -z "$cmd_install_version" ] ||
+                    die_usage 'install takes exactly one version'
+                cmd_install_version="$1"
+                ;;
+        esac
+        shift
+    done
+
+    [ -n "$cmd_install_version" ] || die_usage 'install takes exactly one version'
+    is_version_name "$cmd_install_version" ||
+        die_usage "'$cmd_install_version' is not a version"
+
     require_downloader
     require_extractor
     require_jq
     require_sha256
     ensure_dirs
-    require_zig "$1"
-    require_zls "$ZIGM_ZIG_VERSION"
-    info "resolved zig $ZIGM_ZIG_VERSION with zls $ZIGM_ZLS_VERSION"
-    not_implemented install
+
+    install_version "$cmd_install_version" "$cmd_install_use"
 }
 
 cmd_use() {
@@ -839,19 +1097,39 @@ cmd_current() {
 }
 
 cmd_update() {
-    [ "$#" -eq 0 ] || die_usage 'update takes no arguments'
+    ZIGM_NO_ZLS=0
+    ZIGM_FORCE=0
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --no-zls) ZIGM_NO_ZLS=1 ;;
+            --force) ZIGM_FORCE=1 ;;
+            -*) die_usage "unknown option '$1' for update" ;;
+            *) die_usage 'update takes no arguments, it always installs master' ;;
+        esac
+        shift
+    done
+
     require_downloader
     require_extractor
     require_jq
     require_sha256
     ensure_dirs
-    # update is install of whatever master points at today, so it always
+
+    # A nightly is what update replaces, so `current` follows the new one only
+    # when it pointed at a nightly already, or when nothing is active at all
+    # and no choice of the user's can be disturbed.
+    cmd_update_active=$(find_link_version "$ZIGM_CURRENT_LINK") ||
+        cmd_update_active=''
+    case "$cmd_update_active" in
+        '' | *-dev.*) cmd_update_use=1 ;;
+        *) cmd_update_use=0 ;;
+    esac
+
+    # update is an install of whatever master points at today, so it always
     # refetches the index rather than trusting a cached one.
     ZIGM_REFRESH=1
-    require_zig master
-    require_zls "$ZIGM_ZIG_VERSION"
-    info "resolved zig $ZIGM_ZIG_VERSION with zls $ZIGM_ZLS_VERSION"
-    not_implemented update
+    install_version master "$cmd_update_use"
 }
 
 cmd_clean() {
