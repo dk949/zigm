@@ -93,6 +93,15 @@ These were settled with the user. Do not silently revise them.
   anything extra.
 * Ask before any modifying git operation.
 * Use an `Assisted-By: <model>` trailer on commits.
+* Write commit subjects in the conventional commits style,
+  `<type>(<optional scope>): <description>`:
+  * Types in use: `feat`, `fix`, `docs`, `test`, `ci`, `build`, `refactor`,
+    `perf`, `style`, `chore`.
+  * The description is imperative, lowercase, and carries no trailing period.
+  * A breaking change takes a `!` before the colon, as in `feat!: drop the
+    old layout`, and explains itself in the body.
+  * The body is optional, wrapped at 72 columns, and explains why rather than
+    what.
 
 ### TODO.md
 
