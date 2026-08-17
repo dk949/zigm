@@ -247,3 +247,6 @@
 - [ ] Version aliases, deferred.
 - [ ] Config file, deferred.
 - [ ] Minisign signature verification, deferred.
+- [ ] `env` sub-command to unify the environment output of `zig env`
+    - Prints output of current `zig env` in JSON
+    - This was moved from JSON to ZON in zig 0.15
