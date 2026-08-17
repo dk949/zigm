@@ -28,6 +28,16 @@ ZIGM_EX_UNIMPLEMENTED=3
 ZIGM_VERBOSE=0
 ZIGM_QUIET=0
 
+# Upstream endpoints.
+ZIGM_INDEX_URL='https://ziglang.org/download/index.json'
+ZIGM_ZLS_URL='https://releases.zigtools.org/v1/zls/select-version'
+
+# How long a cached copy of the zig download index stays fresh, in seconds.
+ZIGM_INDEX_TTL=${ZIGM_INDEX_TTL:-3600}
+
+# Set by --refresh, ignores a cached index however fresh it is.
+ZIGM_REFRESH=0
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -95,11 +105,13 @@ global options:
   -V, --version        print the zigm version and exit
   -v, --verbose        print debug output on stderr
   -q, --quiet          print errors and warnings only
+      --refresh        refetch the download index even when it is cached
 
 environment:
   ZIGM_DATA_DIR        override the data directory
   ZIGM_CACHE_DIR       override the cache directory
   ZIGM_CONFIG_DIR      override the config directory
+  ZIGM_INDEX_TTL       seconds a cached download index stays fresh
 
 exit codes:
   0 success, 1 error, 2 usage error, 3 command not implemented
@@ -314,6 +326,226 @@ fetch_file() {
 }
 
 # ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+
+# Prints the time in seconds since the epoch, and fails when `date` cannot
+# produce it. A system that cannot is not an error, it only loses caching.
+find_epoch() {
+    find_epoch_now=$(date +%s 2>/dev/null) || return 1
+    case "$find_epoch_now" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$find_epoch_now"
+}
+
+# cache_fresh <path> <ttl seconds> <now>
+#
+# True when the file and its stamp both exist and the stamp is less than the
+# ttl old. A stamp in the future counts as stale, so a clock that jumped
+# backwards cannot pin a stale file in place.
+cache_fresh() {
+    [ -f "$1" ] && [ -f "$1.stamp" ] || return 1
+
+    cache_fresh_at=$(cat "$1.stamp" 2>/dev/null) || return 1
+    case "$cache_fresh_at" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    case "$3" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+
+    [ "$3" -ge "$cache_fresh_at" ] || return 1
+    [ "$(($3 - cache_fresh_at))" -lt "$2" ]
+}
+
+# fetch_cached <url> <path> <ttl seconds>
+#
+# Downloads the url to the path unless a fresh copy is already there. The time
+# of the download is recorded in a stamp file beside it. Both --refresh and a
+# system without a usable `date` force the download.
+fetch_cached() {
+    fetch_cached_now=$(find_epoch) || fetch_cached_now=''
+
+    if [ "$ZIGM_REFRESH" -eq 0 ] && [ -n "$fetch_cached_now" ] &&
+        cache_fresh "$2" "$3" "$fetch_cached_now"; then
+        debug "cached: $2"
+        return 0
+    fi
+
+    fetch_cached_dir=$(dirname -- "$2")
+    mkdir -p "$fetch_cached_dir" || die "cannot create $fetch_cached_dir"
+
+    # Download beside the target and move it into place, so an interrupted
+    # download cannot leave a truncated file looking like a good one.
+    fetch_file "$1" "$2.part" || die "cannot download $1"
+    mv -f "$2.part" "$2" || die "cannot write $2"
+
+    if [ -n "$fetch_cached_now" ]; then
+        printf '%s\n' "$fetch_cached_now" >"$2.stamp"
+    else
+        rm -f "$2.stamp"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Version resolution
+#
+# The zig download index and the zls version API both key their per platform
+# builds by `<arch>-<os>`, but the spelling of two arches changed over time:
+# zig used `armv7a` up to 0.14.1 and `arm` from 0.15.1, and `i386` up to 0.10.1
+# and `x86` from 0.11.0, while zls uses `armv7a` and `x86` throughout. Lookups
+# therefore try a short list of candidate keys rather than one fixed key.
+# ---------------------------------------------------------------------------
+
+# target_candidates <arch> <os>
+#
+# Prints the keys that could name a build for this platform, best first.
+target_candidates() {
+    case "$1" in
+        arm | armv7a) printf 'arm-%s\narmv7a-%s\n' "$2" "$2" ;;
+        x86 | i386) printf 'x86-%s\ni386-%s\n' "$2" "$2" ;;
+        *) printf '%s-%s\n' "$1" "$2" ;;
+    esac
+}
+
+# find_target <json object> <arch> <os>
+#
+# Prints the first candidate key the object actually carries.
+find_target() {
+    for find_target_key in $(target_candidates "$2" "$3"); do
+        if printf '%s\n' "$1" |
+            jq -e --arg k "$find_target_key" 'has($k)' >/dev/null 2>&1; then
+            printf '%s\n' "$find_target_key"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# find_target_field <json object> <target key> <field>
+#
+# Prints one field of a per platform build, `tarball` or `shasum`.
+find_target_field() {
+    printf '%s\n' "$1" |
+        jq -e -r --arg k "$2" --arg f "$3" '.[$k][$f] // empty' 2>/dev/null
+}
+
+# find_release <index file> <version>
+#
+# Prints the index entry for a version, `master` included, as compact json.
+find_release() {
+    jq -e -c --arg v "$2" '.[$v] // empty' "$1" 2>/dev/null
+}
+
+# find_release_version <release json> <requested version>
+#
+# Prints the concrete version of a release. `master` always carries one, and
+# tagged releases before 0.15.1 do not, but there the request is already
+# concrete. A `master` entry without one is an upstream change worth failing on
+# rather than storing a nightly under the name `master`.
+find_release_version() {
+    find_release_version_v=$(printf '%s\n' "$1" |
+        jq -e -r '.version // empty' 2>/dev/null) || find_release_version_v=''
+
+    if [ -n "$find_release_version_v" ]; then
+        printf '%s\n' "$find_release_version_v"
+    elif [ "$2" = master ]; then
+        return 1
+    else
+        printf '%s\n' "$2"
+    fi
+}
+
+# normalize_query <value>
+#
+# Percent encodes a query string value. Of the characters a zig version can
+# hold, only `+` needs it, since a server is free to read that as a space.
+normalize_query() {
+    printf '%s\n' "$1" | sed 's/+/%2B/g'
+}
+
+# zls_url <zig version>
+#
+# Prints the version selection API url for a zig version. `only-runtime` asks
+# for a zls that runs against that zig, rather than one built by it.
+zls_url() {
+    printf '%s?zig_version=%s&compatibility=only-runtime\n' \
+        "$ZIGM_ZLS_URL" "$(normalize_query "$1")"
+}
+
+# Sets ZIGM_INDEX_FILE, downloading the index when the cached copy is stale.
+require_index() {
+    ZIGM_INDEX_FILE="$ZIGM_CACHE_DIR/index.json"
+    fetch_cached "$ZIGM_INDEX_URL" "$ZIGM_INDEX_FILE" "$ZIGM_INDEX_TTL"
+}
+
+# require_zig <version>
+#
+# Sets ZIGM_ZIG_VERSION, ZIGM_ZIG_TARGET, ZIGM_ZIG_TARBALL, and
+# ZIGM_ZIG_SHASUM. The version may be `master`, which resolves to the concrete
+# dev version the index names today. Requires require_platform.
+require_zig() {
+    require_index
+
+    require_zig_json=$(find_release "$ZIGM_INDEX_FILE" "$1") ||
+        die "no zig '$1' in the download index"
+
+    ZIGM_ZIG_VERSION=$(find_release_version "$require_zig_json" "$1") ||
+        die "the download index entry for '$1' carries no version"
+
+    ZIGM_ZIG_TARGET=$(find_target "$require_zig_json" "$ZIGM_ARCH" "$ZIGM_OS") ||
+        die "zig $ZIGM_ZIG_VERSION has no build for $ZIGM_ARCH-$ZIGM_OS"
+
+    ZIGM_ZIG_TARBALL=$(find_target_field "$require_zig_json" \
+        "$ZIGM_ZIG_TARGET" tarball) ||
+        die "zig $ZIGM_ZIG_VERSION has no tarball for $ZIGM_ZIG_TARGET"
+
+    # An entry without one is rare but real, and checksum verification is a
+    # warning rather than an error, so an empty shasum is not fatal here.
+    # shellcheck disable=SC2034 # read by install, which is not written yet.
+    ZIGM_ZIG_SHASUM=$(find_target_field "$require_zig_json" \
+        "$ZIGM_ZIG_TARGET" shasum) || ZIGM_ZIG_SHASUM=''
+
+    debug "zig $ZIGM_ZIG_VERSION ($ZIGM_ZIG_TARGET): $ZIGM_ZIG_TARBALL"
+}
+
+# require_zls <zig version>
+#
+# Sets ZIGM_ZLS_VERSION, ZIGM_ZLS_TARGET, ZIGM_ZLS_TARBALL, and
+# ZIGM_ZLS_SHASUM. The API pairs zig and zls for tagged and master builds
+# alike, so a concrete zig version is the only input it needs. The response is
+# not cached, since a pairing is cheap to fetch and expensive to get wrong.
+# Requires require_platform and require_downloader.
+require_zls() {
+    require_zls_json=$(fetch_stdout "$(zls_url "$1")") ||
+        die "cannot reach the zls version API"
+
+    # The API reports a missing or unreleased pairing as a json error object
+    # rather than as an http status.
+    require_zls_msg=$(printf '%s\n' "$require_zls_json" |
+        jq -e -r '.message // empty' 2>/dev/null) || require_zls_msg=''
+    [ -z "$require_zls_msg" ] || die "no zls for zig $1: $require_zls_msg"
+
+    ZIGM_ZLS_VERSION=$(printf '%s\n' "$require_zls_json" |
+        jq -e -r '.version // empty' 2>/dev/null) ||
+        die "the zls version API named no version for zig $1"
+
+    ZIGM_ZLS_TARGET=$(find_target "$require_zls_json" "$ZIGM_ARCH" "$ZIGM_OS") ||
+        die "zls $ZIGM_ZLS_VERSION has no build for $ZIGM_ARCH-$ZIGM_OS"
+
+    ZIGM_ZLS_TARBALL=$(find_target_field "$require_zls_json" \
+        "$ZIGM_ZLS_TARGET" tarball) ||
+        die "zls $ZIGM_ZLS_VERSION has no tarball for $ZIGM_ZLS_TARGET"
+
+    # shellcheck disable=SC2034 # read by install, which is not written yet.
+    ZIGM_ZLS_SHASUM=$(find_target_field "$require_zls_json" \
+        "$ZIGM_ZLS_TARGET" shasum) || ZIGM_ZLS_SHASUM=''
+
+    debug "zls $ZIGM_ZLS_VERSION ($ZIGM_ZLS_TARGET): $ZIGM_ZLS_TARBALL"
+}
+
+# ---------------------------------------------------------------------------
 # Commands
 #
 # Each command declares the tools it needs, so a missing dependency fails
@@ -327,6 +559,9 @@ cmd_install() {
     require_jq
     require_sha256
     ensure_dirs
+    require_zig "$1"
+    require_zls "$ZIGM_ZIG_VERSION"
+    info "resolved zig $ZIGM_ZIG_VERSION with zls $ZIGM_ZLS_VERSION"
     not_implemented install
 }
 
@@ -370,6 +605,12 @@ cmd_update() {
     require_jq
     require_sha256
     ensure_dirs
+    # update is install of whatever master points at today, so it always
+    # refetches the index rather than trusting a cached one.
+    ZIGM_REFRESH=1
+    require_zig master
+    require_zls "$ZIGM_ZIG_VERSION"
+    info "resolved zig $ZIGM_ZIG_VERSION with zls $ZIGM_ZLS_VERSION"
     not_implemented update
 }
 
@@ -399,6 +640,10 @@ main() {
                 ;;
             -q | --quiet)
                 ZIGM_QUIET=1
+                shift
+                ;;
+            --refresh)
+                ZIGM_REFRESH=1
                 shift
                 ;;
             --)

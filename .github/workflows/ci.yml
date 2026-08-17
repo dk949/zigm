@@ -55,7 +55,10 @@ jobs:
       - name: Install ${{ matrix.shell }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ matrix.package }}
+          # jq is preinstalled on the runner, but the resolution tests need it,
+          # so it is named here rather than assumed.
+          sudo apt-get install -y --no-install-recommends \
+            ${{ matrix.package }} jq
 
       - name: Run tests
         run: SHELLS='${{ matrix.shell }}' tests/run.sh

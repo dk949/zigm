@@ -37,11 +37,36 @@
           differs.
     - [X] `shellcheck` pinned to a release, so a new version cannot turn a
           green branch red on its own.
-- [ ] Resolve host arch and OS to a Zig release target triple.
-- [ ] Resolve a zig version from the ziglang.org download index.
-    - [ ] Tagged releases.
-    - [ ] `master`, recording the concrete dev version.
-- [ ] Resolve the matching zls build from the zigtools select-version API.
+- [X] Resolve host arch and OS to a Zig release target key.
+    - Both APIs key their per platform builds by `<arch>-<os>`, so there is no
+      full triple to build.
+    - [X] Try a short list of candidate keys, since zig renamed `armv7a` to
+          `arm` in 0.15.1 and `i386` to `x86` in 0.11.0, while zls kept the
+          old spellings.
+- [X] Cache the download index in the cache directory.
+    - [X] A stamp file beside it holds the download time, since there is no
+          portable way to read a file's mtime.
+    - [X] `ZIGM_INDEX_TTL` sets how long a copy stays fresh, one hour by
+          default.
+    - [X] `--refresh` ignores the cached copy, and `update` sets it, since
+          `master` moves under it.
+    - [X] A system whose `date` cannot print epoch seconds just refetches
+          every time.
+- [X] Resolve a zig version from the ziglang.org download index.
+    - [X] Tagged releases, falling back to the requested version when the
+          entry carries no `version` field, as releases before 0.15.1 do not.
+    - [X] `master`, recording the concrete dev version.
+    - [X] A missing shasum is tolerated, since checksum verification is a
+          warning rather than an error.
+- [X] Resolve the matching zls build from the zigtools select-version API.
+    - [X] Percent encode the `+` in a dev version, which the API otherwise
+          reads as a space and rejects with a 400.
+    - [X] Report the API's own message when it has no pairing to offer, since
+          it returns those as a json object with a 200.
+- [ ] Decide what `install` should do when no zls pairs with a zig version.
+    - The API has a build for every tagged release, but a fresh nightly can
+      resolve to an older zls or to nothing at all.
+    - Options are to fail, or to install zig alone and warn.
 - [ ] Implement `install`.
 - [ ] Implement `use` via an atomic `current` symlink swap.
 - [ ] Implement `uninstall`.
