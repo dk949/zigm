@@ -158,6 +158,32 @@
 - [X] Write README covering install and the `PATH` setup the user must do.
     - Also covers the requirements, every command and flag, the on disk layout,
       and how to run the tests.
+- [ ] Accept the global flags after the subcommand as well as before it.
+    - `zigm install -v 0.15.1` and `zigm list-remote --refresh` are both a
+      usage error today, since only the leading flags are parsed.
+    - [ ] Give each subcommand a `--help` of its own, which is currently an
+          unknown option.
+- [ ] Sweep the install scratch directories left behind by a failed install.
+    - `install_payload` writes `versions/.new-<version>` and
+      `versions/.old-<version>`, and only an install of that same version
+      clears them again, so an interrupt leaves them there for good.
+    - [ ] Decide between sweeping them in `clean`, which removes the cache
+          alone today, and clearing them with a trap as the install exits.
+- [ ] Record which zls version an installed version holds.
+    - Nothing on disk names it, so `list` and `current` cannot show it and an
+      install made with `--no-zls` can only gain a zls through `--force`.
+    - [ ] Settle where it lives, since a file under the version directory sits
+          beside the tarball's own contents.
+- [ ] Check whether a version is installed before resolving its zls.
+    - `install_version` resolves the pairing first, so reinstalling an
+      installed version asks the API for an answer it throws away, and fails
+      outright when the pairing has since disappeared rather than saying the
+      version is already installed.
+    - The `--no-zls` warning is printed in the same place, before anything is
+      known about what is installed.
+- [ ] Decide whether concurrent installs need a lock.
+    - Two installs of one version share `.new-<version>`, and the second
+      removes what the first is assembling.
 - [ ] Investigate whether `sed` alone can replace `jq`, dropping the last hard
       dependency.
     - [ ] Move config to a simpler to read and write format like `conf`.
