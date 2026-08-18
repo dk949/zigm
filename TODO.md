@@ -407,6 +407,21 @@
     - The settled note that `-q` drops the unknown key warning was not
       followed: `warn` is loud whatever the verbosity, and `usage` says `-q`
       prints errors and warnings only, so this one warns like every other.
+- [ ] `-v` prints the whole settled configuration for a run.
+    - `config_knob` names a value only when the environment or the file gave
+      it one, so a run with no config file says nothing about any of the four
+      and a user checking what a run used has to know that silence means the
+      built in default.
+    - [ ] Settle whether a value that fell back names its source, likely
+          saying so in the same words the other two use, since the point is
+          that every value is accounted for.
+    - [ ] Settle whether the lines stay where they are, one per value as it is
+          settled, or become one block printed after the read, which would
+          keep the four together whatever order they were settled in.
+    - [ ] Keep it growing with the key set, since a value added later that is
+          not printed puts the gap back.
+    - [ ] `tests/test_config.sh` covers a run with no config file naming all
+          four values.
 - [ ] Minisign signature verification, deferred.
 - [X] `env` sub-command to unify the environment output of `zig env`
     - Prints output of current `zig env` in JSON
