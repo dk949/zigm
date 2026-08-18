@@ -13,10 +13,12 @@
 
 # reset_data
 #
-# Empties the scratch data directory zigm_run points at. The scratch space is
-# shared by every test in the file, so a test that cares starts by clearing it.
+# Empties the scratch data and state directories zigm_run points at. The scratch
+# space is shared by every test in the file, so a test that cares starts by
+# clearing it.
 reset_data() {
     rm -rf "$ZIGM_TMP/data" || fail "cannot clear $ZIGM_TMP/data"
+    rm -rf "$ZIGM_TMP/state" || fail "cannot clear $ZIGM_TMP/state"
 }
 
 # install_fake <version> [binary ...]
@@ -66,6 +68,16 @@ list_marks() {
 # Runs `current` and prints the version alone, for the same reason.
 current_version() {
     zigm_run current | awk '{ print $1 }'
+}
+
+# previous_record
+#
+# Prints the version the last activation recorded, and nothing when there is no
+# record. The file is read rather than a command, since only `use -` reports it
+# and a test wants to see it without activating anything.
+previous_record() {
+    [ -f "$ZIGM_TMP/state/previous" ] || return 0
+    cat "$ZIGM_TMP/state/previous"
 }
 
 # ---------------------------------------------------------------------------
@@ -318,6 +330,76 @@ test_use_switches_between_versions() {
     zigm_run use 0.14.1 >/dev/null 2>&1
     assert_status 0 zigm_run use 0.15.1
     assert_out '0.15.1' current_version
+}
+
+test_use_records_the_version_it_replaced() {
+    reset_data
+    install_fake 0.14.1
+    install_fake 0.15.1
+    zigm_run use 0.14.1 >/dev/null 2>&1
+    zigm_run use 0.15.1 >/dev/null 2>&1
+    assert_out '0.14.1' previous_record
+}
+
+test_use_records_nothing_on_a_first_activation() {
+    reset_data
+    install_fake 0.15.1
+    zigm_run use 0.15.1 >/dev/null 2>&1
+    assert_out '' previous_record
+}
+
+test_use_dash_goes_back_to_the_previous_version() {
+    reset_data
+    install_fake 0.14.1
+    install_fake 0.15.1
+    zigm_run use 0.14.1 >/dev/null 2>&1
+    zigm_run use 0.15.1 >/dev/null 2>&1
+    assert_status 0 zigm_run use -
+    assert_out '0.14.1' current_version
+}
+
+test_use_dash_twice_swaps_back_and_forth() {
+    reset_data
+    install_fake 0.14.1
+    install_fake 0.15.1
+    zigm_run use 0.14.1 >/dev/null 2>&1
+    zigm_run use 0.15.1 >/dev/null 2>&1
+    zigm_run use - >/dev/null 2>&1
+    zigm_run use - >/dev/null 2>&1
+    assert_out '0.15.1' current_version
+}
+
+test_use_of_the_active_version_leaves_the_record_alone() {
+    reset_data
+    install_fake 0.14.1
+    install_fake 0.15.1
+    zigm_run use 0.14.1 >/dev/null 2>&1
+    zigm_run use 0.15.1 >/dev/null 2>&1
+    zigm_run use 0.15.1 >/dev/null 2>&1
+    assert_status 0 zigm_run use -
+    assert_out '0.14.1' current_version
+}
+
+test_use_dash_fails_without_a_record() {
+    reset_data
+    install_fake 0.15.1
+    zigm_run use 0.15.1 >/dev/null 2>&1
+    assert_status "$ZIGM_EX_ERROR" zigm_run use -
+    assert_contains "$(zigm_run_out use -)" 'no previous version' 'message'
+}
+
+test_use_dash_reports_a_previous_version_that_is_gone() {
+    reset_data
+    install_fake 0.14.1
+    install_fake 0.15.1
+    zigm_run use 0.14.1 >/dev/null 2>&1
+    zigm_run use 0.15.1 >/dev/null 2>&1
+    zigm_run uninstall 0.14.1 >/dev/null 2>&1
+    assert_status "$ZIGM_EX_ERROR" zigm_run use -
+    assert_contains "$(zigm_run_out use -)" 'the previous version' 'message'
+    # The record is left as it stands, so it is still a way back once the
+    # version is installed again.
+    assert_out '0.14.1' previous_record
 }
 
 test_use_rejects_a_version_that_is_not_installed() {

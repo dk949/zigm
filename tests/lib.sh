@@ -173,6 +173,7 @@ zigm_run() {
         ZIGM_DATA_DIR="$ZIGM_TMP/data" \
         ZIGM_CACHE_DIR="$ZIGM_TMP/cache" \
         ZIGM_CONFIG_DIR="$ZIGM_TMP/config" \
+        ZIGM_STATE_DIR="$ZIGM_TMP/state" \
         ZIGM_LIB=0 \
         $ZIGM_SHELL_CMD "$ZIGM_BIN" "$@"
 }

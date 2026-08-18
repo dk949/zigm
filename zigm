@@ -130,6 +130,7 @@ version arguments:
   0.15                 the newest release of that line, tagged ones only
   stable               the newest tagged release
   master, latest       the nightly, kept under the version it resolves to
+  -                    what the last activation replaced, 'use' alone
 
 install and update options:
       --no-zls         install zig alone rather than failing when no zls pairs
@@ -147,6 +148,7 @@ environment:
   ZIGM_DATA_DIR        override the data directory
   ZIGM_CACHE_DIR       override the cache directory
   ZIGM_CONFIG_DIR      override the config directory
+  ZIGM_STATE_DIR       override the state directory
   ZIGM_INDEX_TTL       seconds a cached download index stays fresh
   ZIGM_CONNECT_TIMEOUT seconds a download waits on a connection
   ZIGM_RETRIES         how many times a failed download is tried again
@@ -198,6 +200,11 @@ Points 'current' at an installed version, in one symlink swap. The version is
 answered against the installed ones, so '0.15' names the newest installed
 0.15.x and 'stable' the newest installed tagged release. A nightly is asked
 for by the version it was installed under rather than by 'master'.
+
+'zigm use -' goes back to the version the last activation replaced, which
+'install', 'update', and 'use' all record. Two of them in a row swap back and
+forth. An activation that changes nothing leaves the record alone, so it is
+still a way back.
 EOF
             ;;
         uninstall)
@@ -371,8 +378,9 @@ is_removable() {
 
 # base_dir <kind> <os> <home>
 #
-# Prints the zigm directory for `kind`, one of data, cache, or config. The os
-# and home are arguments rather than globals so tests can ask for any platform.
+# Prints the zigm directory for `kind`, one of data, cache, config, or state.
+# The os and home are arguments rather than globals so tests can ask for any
+# platform.
 base_dir() {
     base_dir_kind="$1"
     base_dir_os="$2"
@@ -384,7 +392,7 @@ base_dir() {
 
     if [ "$base_dir_os" = macos ]; then
         case "$base_dir_kind" in
-            data | config)
+            data | config | state)
                 printf '%s/Library/Application Support/zigm\n' "$base_dir_home"
                 ;;
             cache) printf '%s/Library/Caches/zigm\n' "$base_dir_home" ;;
@@ -398,6 +406,7 @@ base_dir() {
         data) printf '%s/zigm\n' "${XDG_DATA_HOME:-$base_dir_home/.local/share}" ;;
         cache) printf '%s/zigm\n' "${XDG_CACHE_HOME:-$base_dir_home/.cache}" ;;
         config) printf '%s/zigm\n' "${XDG_CONFIG_HOME:-$base_dir_home/.config}" ;;
+        state) printf '%s/zigm\n' "${XDG_STATE_HOME:-$base_dir_home/.local/state}" ;;
         *) return 1 ;;
     esac
 }
@@ -423,13 +432,19 @@ require_dirs() {
         ZIGM_CONFIG_DIR=$(base_dir config "$ZIGM_OS" "${HOME:-}") ||
             die 'cannot resolve the config directory, HOME is unset'
     fi
+    if [ -z "${ZIGM_STATE_DIR:-}" ]; then
+        ZIGM_STATE_DIR=$(base_dir state "$ZIGM_OS" "${HOME:-}") ||
+            die 'cannot resolve the state directory, HOME is unset'
+    fi
 
     ZIGM_VERSIONS_DIR="$ZIGM_DATA_DIR/versions"
     ZIGM_CURRENT_LINK="$ZIGM_DATA_DIR/current"
+    ZIGM_PREVIOUS_FILE="$ZIGM_STATE_DIR/previous"
 
     debug "data dir: $ZIGM_DATA_DIR"
     debug "cache dir: $ZIGM_CACHE_DIR"
     debug "config dir: $ZIGM_CONFIG_DIR"
+    debug "state dir: $ZIGM_STATE_DIR"
     debug "current link: $ZIGM_CURRENT_LINK"
 }
 
@@ -437,6 +452,7 @@ require_dirs() {
 ensure_dirs() {
     mkdir -p "$ZIGM_VERSIONS_DIR" || die "cannot create $ZIGM_VERSIONS_DIR"
     mkdir -p "$ZIGM_CACHE_DIR" || die "cannot create $ZIGM_CACHE_DIR"
+    mkdir -p "$ZIGM_STATE_DIR" || die "cannot create $ZIGM_STATE_DIR"
 }
 
 # ---------------------------------------------------------------------------
@@ -1576,6 +1592,51 @@ swap_link() {
     [ "$swap_link_now" = "$swap_link_target" ]
 }
 
+# find_previous <record file>
+#
+# Prints the version an activation last replaced, and fails when there is no
+# record, when it is empty, or when it holds something that is not a version
+# name, so a file edited by hand cannot name a path of its own.
+find_previous() {
+    [ -f "$1" ] || return 1
+
+    # Only the first line is read, since the record is one version and a file
+    # holding more than that was not written by zigm.
+    find_previous_version=$(head -n 1 <"$1") || return 1
+    is_version_name "$find_previous_version" || return 1
+
+    printf '%s\n' "$find_previous_version"
+}
+
+# write_previous <record file> <version>
+#
+# Records the version an activation replaced. A failure warns rather than ending
+# the command, since the activation has happened already and the record is only
+# a way back.
+write_previous() {
+    printf '%s\n' "$2" >"$1" 2>/dev/null ||
+        warn "cannot record the previous version in $1"
+}
+
+# activate_version <version dir> <link path> <record file>
+#
+# Points the link at a version and records the one it replaced, so `use -` can
+# go back to it. Fails, writing no record, when the link cannot be moved.
+#
+# An activation with nothing active before it has nothing to record, and one
+# naming the version that is active already leaves the record as it stands, so
+# a run that changes nothing does not cost the user their way back.
+activate_version() {
+    activate_version_old=$(find_link_version "$2") || activate_version_old=''
+
+    swap_link "$1" "$2" || return 1
+
+    [ -n "$activate_version_old" ] || return 0
+    [ "$activate_version_old" != "${1##*/}" ] || return 0
+
+    write_previous "$3" "$activate_version_old"
+}
+
 # is_on_path <directory> <path list>
 #
 # True when the directory is on the path list, comparing physical paths, so a
@@ -2103,7 +2164,8 @@ install_version() {
 
     [ "$2" -eq 1 ] || return 0
 
-    swap_link "$install_version_dir" "$ZIGM_CURRENT_LINK" ||
+    activate_version "$install_version_dir" "$ZIGM_CURRENT_LINK" \
+        "$ZIGM_PREVIOUS_FILE" ||
         die "cannot point $ZIGM_CURRENT_LINK at $install_version_dir"
     info "now using zig $ZIGM_ZIG_VERSION"
     warn_path "$ZIGM_CURRENT_LINK"
@@ -2156,10 +2218,25 @@ cmd_use() {
     is_version_name "$1" || die_usage "'$1' is not a version"
     ensure_dirs
     require_lock
-    require_local_version "$1"
+
+    # `-` is answered here rather than by find_version_match, since it names
+    # what an earlier run recorded rather than anything the installed versions
+    # carry.
+    if [ "$1" = - ]; then
+        ZIGM_WANTED_VERSION=$(find_previous "$ZIGM_PREVIOUS_FILE") ||
+            die 'no previous version is recorded, there is nothing to go back to'
+        debug "'-' is zig $ZIGM_WANTED_VERSION"
+    else
+        require_local_version "$1"
+    fi
 
     cmd_use_dir="$ZIGM_VERSIONS_DIR/$ZIGM_WANTED_VERSION"
     if [ ! -d "$cmd_use_dir" ]; then
+        # The record is left as it stands, so what it names is still nameable
+        # once it is installed again.
+        [ "$1" != - ] ||
+            die "the previous version, zig $ZIGM_WANTED_VERSION," \
+                "is not installed"
         # master is stored under the dev version it resolved to, so it never
         # names a directory of its own, and `latest` resolves to master.
         [ "$ZIGM_WANTED_VERSION" != master ] ||
@@ -2168,7 +2245,8 @@ cmd_use() {
             "run 'zigm install $ZIGM_WANTED_VERSION'"
     fi
 
-    swap_link "$cmd_use_dir" "$ZIGM_CURRENT_LINK" ||
+    activate_version "$cmd_use_dir" "$ZIGM_CURRENT_LINK" \
+        "$ZIGM_PREVIOUS_FILE" ||
         die "cannot point $ZIGM_CURRENT_LINK at $cmd_use_dir"
 
     info "now using zig $ZIGM_WANTED_VERSION"

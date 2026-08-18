@@ -87,7 +87,8 @@ covers the rest.
       installed is left as it is, except that one holding no zls gains the zls
       it pairs with.
 * `use <version>`
-    * Point `current` at an already installed version.
+    * Point `current` at an already installed version, or at the one the last
+      activation replaced with `zigm use -`.
 * `uninstall <version>`
     * Remove an installed version. Removing the active one drops the `current`
       link and warns.
@@ -126,6 +127,8 @@ against what is installed:
 * `master`, or `latest`, the nightly. Only `install` and `update` take it, since
   a nightly is stored under the version it resolved to and `use` wants that
   version by name.
+* `-`, the version the last activation replaced, which `use` alone takes. Two
+  `zigm use -` runs in a row swap back and forth.
 
 A partial version and `stable` are answered by a tagged release alone. A
 nightly moves under the release it leads up to, so it is asked for by `master`
@@ -154,6 +157,7 @@ or by the version it was installed under.
 * `ZIGM_DATA_DIR`, override the data directory.
 * `ZIGM_CACHE_DIR`, override the cache directory.
 * `ZIGM_CONFIG_DIR`, override the config directory.
+* `ZIGM_STATE_DIR`, override the state directory.
 * `ZIGM_INDEX_TTL`, seconds a cached download index stays fresh, 3600 by
   default.
 * `ZIGM_CONNECT_TIMEOUT`, seconds a download waits on a connection, 15 by
@@ -263,12 +267,15 @@ Platform native, honoring the XDG environment variables where they apply:
     * data: `${XDG_DATA_HOME:-~/.local/share}/zigm`
     * cache: `${XDG_CACHE_HOME:-~/.cache}/zigm`
     * config: `${XDG_CONFIG_HOME:-~/.config}/zigm`
+    * state: `${XDG_STATE_HOME:-~/.local/state}/zigm`
 * macOS:
-    * data and config: `~/Library/Application Support/zigm`
+    * data, config, and state: `~/Library/Application Support/zigm`
     * cache: `~/Library/Caches/zigm`
 
-Only the data and cache directories are written to. The config directory holds
-`zigm.conf`, which you write yourself and zigm only reads.
+The data, cache, and state directories are written to. The config directory
+holds `zigm.conf`, which you write yourself and zigm only reads. The state
+directory holds `previous`, the version the last activation replaced, which is
+what `zigm use -` goes back to.
 
 ## Development
 

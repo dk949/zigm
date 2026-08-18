@@ -195,7 +195,9 @@ zigm_install_setup() {
     ZIGM_VERSIONS_DIR="$zigm_root/versions"
     ZIGM_CURRENT_LINK="$zigm_root/current"
     ZIGM_CACHE_DIR="$zigm_root/cache"
-    mkdir -p "$ZIGM_VERSIONS_DIR" "$ZIGM_CACHE_DIR"
+    ZIGM_STATE_DIR="$zigm_root/state"
+    ZIGM_PREVIOUS_FILE="$ZIGM_STATE_DIR/previous"
+    mkdir -p "$ZIGM_VERSIONS_DIR" "$ZIGM_CACHE_DIR" "$ZIGM_STATE_DIR"
 
     ZIGM_ARCH=x86_64
     ZIGM_OS=linux

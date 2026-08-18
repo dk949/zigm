@@ -43,6 +43,9 @@
         - [X] `tests/test_config.sh` covers the config file reader, the
               precedence against the environment, and a whole run reading a
               file.
+        - [X] `tests/test_previous.sh` covers the record of the replaced
+              version and the wrapper that writes it, over empty directories
+              and a symlink rather than over installs.
 - [X] Run the tests, `shellcheck`, and a syntax check in CI.
     - [X] GitHub Actions, on push and pull request.
     - [X] Linux matrix of dash, bash, mksh, ksh, busybox ash, and zsh in sh
@@ -503,6 +506,8 @@
           `<state>/previous`, so the state directory serves both.
         - `base_dir` gains the kind, `require_dirs` the global, and
           `ZIGM_STATE_DIR` overrides it the way the other three are overridden.
+        - All three landed with the `use -` item below, which wanted the same
+          directory, so what is left here is the log itself.
     - [X] Settle whether it is one file or one per run, and how much is kept.
         - Settled: one file every run appends to, and a run that finds it over
           a size cap keeps the tail and drops the rest, so nothing has to
@@ -607,18 +612,36 @@
     - [X] `tests/test_path.sh` covers the three functions and `use` end to end.
         - A test naming a path list keeps the real one on the end, since mksh
           reaches `printf` through it.
-- [ ] Add an alias `-`, when used as `zigm use -`, reverts back to the previous
+- [X] Add an alias `-`, when used as `zigm use -`, reverts back to the previous
       used version.
     - [X] Settle where the previous version is recorded.
         - Settled: `<state>/previous`, in the state directory the log file
           item settled above, since the `.zigm` meta is per version and this
           record belongs to neither a version nor the cache.
-    - [ ] Settle who writes it, likely every caller of `swap_link`, so an
-          activation records what it replaced whether it came from `use`,
-          `install`, or `update`.
-    - [ ] Settle what two `use -` runs in a row do, which is a swap back and
-          forth once every activation writes the record.
-    - [ ] Settle what a record naming an uninstalled version does, and what a
-          missing record does, likely an error naming which of the two it is.
-    - [ ] Keep `-` out of `find_version_match`, since `use` resolves it to a
+        - The state directory landed here rather than with the log file:
+          `base_dir` took the kind, `require_dirs` the `ZIGM_STATE_DIR` and
+          `ZIGM_PREVIOUS_FILE` globals, and `ensure_dirs` creates it.
+    - [X] Settle who writes it.
+        - Settled: `activate_version`, a wrapper over `swap_link` that reads
+          the link, swaps it, and records what was there, which `cmd_use` and
+          `install_version` both go through so `use`, `install`, and `update`
+          all record alike.
+        - `swap_link` stays a link primitive, so nothing about the record can
+          leak into the one caller that only wants a symlink moved.
+    - [X] Settle what an activation that changes nothing does.
+        - Settled: it leaves the record alone, so a `use` of the version that
+          is active already does not cost the user their way back, and a first
+          activation, with nothing active before it, records nothing.
+    - [X] Settle what two `use -` runs in a row do.
+        - Settled: they swap back and forth, which falls out of every
+          activation recording what it replaced.
+    - [X] Settle what a record naming an uninstalled version does, and what a
+          missing record does.
+        - Settled: an error naming which of the two it is, and the record is
+          left as it stands either way, so a version installed again is still
+          reachable through it.
+    - [X] Keep `-` out of `find_version_match`, since `use` resolves it to a
           version first, the way a concrete name never reaches a query.
+    - [X] `tests/test_previous.sh` covers the three new functions, and
+          `tests/test_local.sh` covers `use -` end to end, including the two
+          errors and the activation that records nothing.
