@@ -423,7 +423,29 @@
 - [ ] Run one command under a version without activating it, deferred.
     - `zigm which` already prints the path to run, so this may not be worth a
       subcommand of its own.
-- [ ] Warn when the `current` directory is not on `PATH`, as the last step of
+- [X] Warn when the `current` directory is not on `PATH`, as the last step of
       an install.
     - It is the one piece of setup zigm leaves to the user, so it is the most
       likely thing to be missing.
+    - [X] Settle which commands check.
+        - Settled: every command that activates a version, so `install`,
+          `update`, and `use` all report the same thing.
+    - [X] Settle how strict the check is.
+        - Settled: the link has to be on `PATH` and the zig `PATH` leads to has
+          to be the one under it, so a system zig ahead of the link is reported
+          too.
+    - [X] `is_on_path` compares physical paths, so a symlinked home, a trailing
+          slash, and a `..` on the way all still match.
+        - `find_real_dir` is the resolution the rest of the script already made
+          inline, now named, and the three callers it had take it too.
+        - An entry is a path rather than a pattern, so globbing is off for the
+          split.
+    - [X] `find_zig_dir` walks the same list rather than asking `command -v`,
+          which answers for the path this run was started with rather than for
+          the one it is asked about.
+    - [X] `warn_path` says which of the two is wrong, and follows it with the
+          line that fixes it, as a `note` rather than a warning so `-q` drops
+          it while the warning stands.
+    - [X] `tests/test_path.sh` covers the three functions and `use` end to end.
+        - A test naming a path list keeps the real one on the end, since mksh
+          reaches `printf` through it.

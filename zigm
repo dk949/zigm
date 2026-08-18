@@ -329,6 +329,20 @@ parent_dir() {
     printf '%s\n' "${parent_dir_head:-/}"
 }
 
+# find_real_dir <path>
+#
+# Prints the physical path of a directory, with every symlink in it resolved,
+# including the last component. Fails when the path names nothing reachable.
+#
+# The body is a subshell, so the `cd` cannot move the caller.
+find_real_dir() (
+    # An empty path is refused here rather than by `cd`, which POSIX leaves
+    # unspecified for one and which dash and zsh take as a no-op success.
+    [ -n "$1" ] || return 1
+    CDPATH='' cd -P -- "$1" 2>/dev/null || return 1
+    pwd -P
+)
+
 # is_removable <directory>
 #
 # False when a directory is the root, however it is spelled, and false when it
@@ -339,12 +353,7 @@ parent_dir() {
 # checked version name, so this guards only the one directory a user names,
 # the cache. It is cheap enough to be worth having anyway.
 is_removable() {
-    # An empty path is refused here rather than by `cd`, which POSIX leaves
-    # unspecified for one and which dash and zsh take as a no-op success.
-    [ -n "$1" ] || return 1
-
-    is_removable_real=$(CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P) ||
-        return 1
+    is_removable_real=$(find_real_dir "$1") || return 1
 
     # A path of exactly two leading slashes is the implementation's to define,
     # so `pwd -P` may name the root `//`, as it does under bash.
@@ -1352,8 +1361,7 @@ find_zls_note() {
 find_link_version() {
     [ -L "$1" ] || return 1
 
-    find_link_version_dir=$(CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P) ||
-        return 1
+    find_link_version_dir=$(find_real_dir "$1") || return 1
 
     # The last component of the resolved path is the version, since that is
     # how installs are named. Stripping it here keeps `basename` out of the
@@ -1374,8 +1382,7 @@ find_link_version() {
 # The fallback is not atomic, but its window is one syscall wide and it leaves
 # the link missing rather than wrong.
 swap_link() {
-    swap_link_target=$(CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P) ||
-        return 1
+    swap_link_target=$(find_real_dir "$1") || return 1
 
     swap_link_tmp="$2.new"
     rm -f -- "$swap_link_tmp" || return 1
@@ -1387,8 +1394,72 @@ swap_link() {
 
     # An `mv` that took neither option would have moved the new link inside the
     # old target instead of replacing it, so confirm where the link points now.
-    swap_link_now=$(CDPATH='' cd -P -- "$2" 2>/dev/null && pwd -P) || return 1
+    swap_link_now=$(find_real_dir "$2") || return 1
     [ "$swap_link_now" = "$swap_link_target" ]
+}
+
+# is_on_path <directory> <path list>
+#
+# True when the directory is on the path list, comparing physical paths, so a
+# symlinked home, a trailing slash, and a `..` on the way all still match.
+#
+# The body is a subshell, since the split below sets IFS and turns globbing
+# off, neither of which the caller asked for.
+is_on_path() (
+    is_on_path_want=$(find_real_dir "$1") || return 1
+
+    IFS=:
+    # An entry is a path, not a pattern, so it must not be expanded as one.
+    set -f
+    for is_on_path_entry in $2; do
+        # An empty entry names the working directory.
+        [ -n "$is_on_path_entry" ] || is_on_path_entry=.
+        is_on_path_real=$(find_real_dir "$is_on_path_entry") || continue
+        [ "$is_on_path_real" != "$is_on_path_want" ] || return 0
+    done
+
+    return 1
+)
+
+# find_zig_dir <path list>
+#
+# Prints the physical directory of the first zig on the path list, and fails
+# when there is none. The search is made here rather than with `command -v`,
+# which answers for the path this run was started with rather than for the one
+# it is asked about.
+find_zig_dir() (
+    IFS=:
+    set -f
+    for find_zig_dir_entry in $1; do
+        [ -n "$find_zig_dir_entry" ] || find_zig_dir_entry=.
+        if [ -x "$find_zig_dir_entry/zig" ] &&
+            [ ! -d "$find_zig_dir_entry/zig" ]; then
+            find_real_dir "$find_zig_dir_entry" && return 0
+        fi
+    done
+
+    return 1
+)
+
+# warn_path <link>
+#
+# Says so when the version just activated will not be the zig the user gets:
+# either the link is not on PATH at all, which is the one piece of setup zigm
+# leaves to them, or another zig sits ahead of it. Called after an activation,
+# where the link is there and holds a zig, so anything else is left quiet.
+warn_path() {
+    if ! is_on_path "$1" "${PATH:-}"; then
+        warn "$1 is not on PATH, so this zig will not be found"
+        note "put it there with: PATH=\"$1:\$PATH\""
+        return 0
+    fi
+
+    warn_path_want=$(find_real_dir "$1") || return 0
+    warn_path_found=$(find_zig_dir "${PATH:-}") || return 0
+    [ "$warn_path_found" != "$warn_path_want" ] || return 0
+
+    warn "$warn_path_found/zig comes before $1 on PATH"
+    note "put $1 first to reach the version zigm activated"
 }
 
 # ---------------------------------------------------------------------------
@@ -1857,6 +1928,7 @@ install_version() {
     swap_link "$install_version_dir" "$ZIGM_CURRENT_LINK" ||
         die "cannot point $ZIGM_CURRENT_LINK at $install_version_dir"
     info "now using zig $ZIGM_ZIG_VERSION"
+    warn_path "$ZIGM_CURRENT_LINK"
 }
 
 # ---------------------------------------------------------------------------
@@ -1922,6 +1994,7 @@ cmd_use() {
         die "cannot point $ZIGM_CURRENT_LINK at $cmd_use_dir"
 
     info "now using zig $ZIGM_WANTED_VERSION"
+    warn_path "$ZIGM_CURRENT_LINK"
 }
 
 cmd_uninstall() {

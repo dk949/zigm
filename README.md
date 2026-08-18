@@ -63,6 +63,10 @@ switch versions: `zigm use` repoints the symlink, and the path stays the same.
 
 If you set `ZIGM_DATA_DIR`, use `$ZIGM_DATA_DIR/current` instead.
 
+Every command that activates a version, `install`, `update`, and `use`, checks
+`PATH` afterwards and warns when the setup above is missing: either `current` is
+not on `PATH` at all, or another zig sits ahead of it and would be found first.
+
 ## Usage
 
 ```
