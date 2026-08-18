@@ -449,3 +449,5 @@
     - [X] `tests/test_path.sh` covers the three functions and `use` end to end.
         - A test naming a path list keeps the real one on the end, since mksh
           reaches `printf` through it.
+- [ ] Add an alias `-`, when used as `zigm use -`, reverts back to the previous
+      used version.
