@@ -39,6 +39,15 @@ ZIGM_LIB=1
 # under test, but drop -e, since the assertions check statuses themselves.
 set +e
 
+# zigm settles the four tunable values as it reads the config file, which only
+# a whole run does, so settle them here from the defaults alone. A test that
+# wants another value assigns it, as it did when they were assigned on load.
+# shellcheck disable=SC2034 # Read by the sourced zigm, not by this file.
+ZIGM_CONFIG_FILE=''
+# shellcheck disable=SC2034 # Read by the sourced zigm, not by this file.
+ZIGM_CONFIG_TEXT=''
+config_settle
+
 # Scratch space, removed by run_tests.
 ZIGM_TMP=$(mktemp -d 2>/dev/null) ||
     {

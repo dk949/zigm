@@ -162,6 +162,34 @@ or by the version it was installed under.
   default.
 * `ZIGM_RETRY_DELAY`, seconds between those tries, 1 by default.
 
+The last four are the values the config file may carry too, and the
+environment wins over the file.
+
+### Configuration
+
+The config file is optional, and lives at `<config dir>/zigm.conf`. It holds
+flat `key = value` lines, `#` starts a comment, and space around a key or a
+value is ignored:
+
+```
+# how long a cached download index stays fresh
+index_ttl = 86400
+
+connect_timeout = 30
+retries = 4
+retry_delay = 2
+```
+
+* The keys are `index_ttl`, `connect_timeout`, `retries`, and `retry_delay`,
+  the four the environment sets as well.
+* The environment wins over the file, which wins over the built in default, so
+  a single run can override what the file settles without editing it.
+* A key zigm does not know warns and is skipped, so an older zigm reads a file
+  written for a newer one.
+* A line that cannot be read, or a value that is not a whole number, fails the
+  command, naming the line it stopped on.
+* `zigm -v` names the file it read, and says so when there is none.
+
 ### Exit codes
 
 * `0` success
@@ -239,8 +267,8 @@ Platform native, honoring the XDG environment variables where they apply:
     * data and config: `~/Library/Application Support/zigm`
     * cache: `~/Library/Caches/zigm`
 
-Only the data and cache directories are written to. The config directory is
-resolved ahead of a config file landing.
+Only the data and cache directories are written to. The config directory holds
+`zigm.conf`, which you write yourself and zigm only reads.
 
 ## Development
 
@@ -260,7 +288,6 @@ resolved ahead of a config file landing.
 ## Not implemented yet
 
 * Version aliases.
-* A config file.
 * Minisign signature verification.
 
 ## License

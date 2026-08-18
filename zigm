@@ -31,16 +31,13 @@ ZIGM_QUIET=0
 ZIGM_INDEX_URL='https://ziglang.org/download/index.json'
 ZIGM_ZLS_URL='https://releases.zigtools.org/v1/zls/select-version'
 
-# How long a cached copy of the zig download index stays fresh, in seconds.
-ZIGM_INDEX_TTL=${ZIGM_INDEX_TTL:-3600}
-
-# How long a downloader waits on a connection, in seconds, and how many times a
-# failed download is tried again. Without a timeout a hung mirror hangs the
-# command with no output and no way out of it but a kill, and the retry is what
-# keeps a timeout, or any other transient failure, from ending an install.
-ZIGM_CONNECT_TIMEOUT=${ZIGM_CONNECT_TIMEOUT:-15}
-ZIGM_RETRIES=${ZIGM_RETRIES:-2}
-ZIGM_RETRY_DELAY=${ZIGM_RETRY_DELAY:-1}
+# ZIGM_INDEX_TTL, how long a cached copy of the zig download index stays fresh,
+# and ZIGM_CONNECT_TIMEOUT, ZIGM_RETRIES, and ZIGM_RETRY_DELAY, which bound a
+# download, are the four values the config file may carry, so they are settled
+# by `config_settle` rather than assigned here. Without a timeout a hung mirror
+# hangs the command with no output and no way out of it but a kill, and the
+# retry is what keeps a timeout, or any other transient failure, from ending an
+# install.
 
 # Whether this wget takes -t, set by require_downloader. GNU wget retries 20
 # times on its own, which multiplies the retry loop here, while busybox wget
@@ -151,6 +148,16 @@ environment:
   ZIGM_CACHE_DIR       override the cache directory
   ZIGM_CONFIG_DIR      override the config directory
   ZIGM_INDEX_TTL       seconds a cached download index stays fresh
+  ZIGM_CONNECT_TIMEOUT seconds a download waits on a connection
+  ZIGM_RETRIES         how many times a failed download is tried again
+  ZIGM_RETRY_DELAY     seconds between those tries
+
+configuration:
+  The optional config file is <config dir>/zigm.conf, holding 'key = value'
+  lines with '#' comments, and '-v' names the file it read. Its keys are
+  index_ttl, connect_timeout, retries, and retry_delay, the same four values
+  the environment sets above, and the environment wins over the file, which
+  wins over the built in default.
 
 exit codes:
   0 success, 1 error, 2 usage error
@@ -430,6 +437,177 @@ require_dirs() {
 ensure_dirs() {
     mkdir -p "$ZIGM_VERSIONS_DIR" || die "cannot create $ZIGM_VERSIONS_DIR"
     mkdir -p "$ZIGM_CACHE_DIR" || die "cannot create $ZIGM_CACHE_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# Configuration
+#
+# The config file is `<config>/zigm.conf`, one fixed path, since
+# ZIGM_CONFIG_DIR already redirects it for a custom prefix and for a test.
+#
+# It holds flat `key = value` lines, `#` starts a comment, and space around a
+# key or a value is ignored. A dot groups related keys, as in `alias.work`, so
+# nothing has to carry a section while reading. The file is parsed rather than
+# sourced, since sourcing would hand a config file the whole shell.
+#
+# A key zigm does not know warns and is skipped, so an older zigm reads a file
+# written for a newer one. A line that cannot be read, or a value of the wrong
+# shape, fails the command instead, since either one is a mistake rather than a
+# difference between versions.
+# ---------------------------------------------------------------------------
+
+# The keys a value may be given under, one to a line, which is what tells an
+# unknown key from a known one.
+ZIGM_CONFIG_KEYS='connect_timeout
+retries
+retry_delay
+index_ttl'
+
+# is_count <value>
+#
+# True for a whole number, which is the shape of every value the file carries
+# today.
+is_count() {
+    case "$1" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+}
+
+# normalize_config <file text>
+#
+# Prints one line per setting, the key and its value separated by a tab, which
+# is the shape the lookups below read. Nothing is printed until the whole file
+# has been read, so a file with a bad line in it prints that line's number and
+# what was on it in place of the settings, and no half read file reaches a
+# caller.
+normalize_config() {
+    printf '%s\n' "$1" | awk '
+        function trim(s) {
+            sub(/^[[:space:]]+/, "", s)
+            sub(/[[:space:]]+$/, "", s)
+            return s
+        }
+
+        {
+            line = $0
+
+            # A value zigm reads never carries one, so a `#` anywhere begins a
+            # comment.
+            sub(/#.*/, "", line)
+            line = trim(line)
+            if (line == "")
+                next
+
+            eq = index(line, "=")
+            key = (eq == 0) ? "" : trim(substr(line, 1, eq - 1))
+
+            if (key !~ /^[A-Za-z_][A-Za-z0-9_.-]*$/) {
+                bad = "line " NR ": cannot read \"" line "\""
+                exit 1
+            }
+
+            out = out key "\t" trim(substr(line, eq + 1)) "\n"
+        }
+
+        END {
+            if (bad != "") {
+                print bad
+                exit 1
+            }
+            printf "%s", out
+        }
+    '
+}
+
+# config_keys <settings>
+#
+# Prints the key of every setting, in the order the file gave them.
+config_keys() {
+    printf '%s\n' "$1" | awk -F '\t' '$1 != "" { print $1 }'
+}
+
+# config_field <settings> <key>
+#
+# Prints the value the key was given, and fails when the file did not give it
+# one. A key given a value twice reads as the later line, and an empty value is
+# a value, so a key spelled with nothing after it fails the shape check below
+# rather than passing for absent.
+config_field() {
+    printf '%s\n' "$1" | awk -F '\t' -v k="$2" '
+        $1 == k { value = $2; found = 1 }
+        END {
+            if (found)
+                print value
+            exit(found ? 0 : 1)
+        }
+    '
+}
+
+# config_knob <environment value> <key> <default>
+#
+# Prints the value one knob settles on: what the environment gave it, if
+# anything, then what the file gives the key, if it carries it, then the built
+# in default. That order is why none of the four is assigned as the script
+# loads, since a default assigned there could not be told from a value the
+# environment carried.
+config_knob() {
+    if [ -n "$1" ]; then
+        debug "config: $2=$1, from the environment"
+        printf '%s\n' "$1"
+        return 0
+    fi
+
+    if config_knob_value=$(config_field "$ZIGM_CONFIG_TEXT" "$2"); then
+        is_count "$config_knob_value" ||
+            die "$ZIGM_CONFIG_FILE: $2 wants a whole number, not '$config_knob_value'"
+        debug "config: $2=$config_knob_value, from the file"
+    else
+        config_knob_value="$3"
+    fi
+
+    printf '%s\n' "$config_knob_value"
+}
+
+# Settles the four values the config file may carry, reading ZIGM_CONFIG_TEXT,
+# which require_config sets and a caller that only wants the defaults leaves
+# empty. A value that fails its check ends the run inside the substitution, so
+# each assignment carries the status out of it.
+config_settle() {
+    ZIGM_CONNECT_TIMEOUT=$(config_knob "${ZIGM_CONNECT_TIMEOUT:-}" connect_timeout 15) || exit "$?"
+    ZIGM_RETRIES=$(config_knob "${ZIGM_RETRIES:-}" retries 2) || exit "$?"
+    ZIGM_RETRY_DELAY=$(config_knob "${ZIGM_RETRY_DELAY:-}" retry_delay 1) || exit "$?"
+    ZIGM_INDEX_TTL=$(config_knob "${ZIGM_INDEX_TTL:-}" index_ttl 3600) || exit "$?"
+}
+
+# Reads the config file and settles the values it may carry. Requires
+# require_dirs, and runs once whatever the command, so every command sees the
+# same values and one place reports a failure.
+require_config() {
+    ZIGM_CONFIG_FILE="$ZIGM_CONFIG_DIR/zigm.conf"
+    ZIGM_CONFIG_TEXT=''
+
+    if [ -f "$ZIGM_CONFIG_FILE" ]; then
+        require_config_text=$(cat "$ZIGM_CONFIG_FILE") ||
+            die "cannot read $ZIGM_CONFIG_FILE"
+
+        # A failed parse leaves its reason in the variable, since the
+        # assignment takes whatever was printed either way.
+        ZIGM_CONFIG_TEXT=$(normalize_config "$require_config_text") ||
+            die "$ZIGM_CONFIG_FILE: $ZIGM_CONFIG_TEXT"
+
+        debug "config file: $ZIGM_CONFIG_FILE"
+
+        for require_config_key in $(config_keys "$ZIGM_CONFIG_TEXT"); do
+            case "$ZIGM_NEWLINE$ZIGM_CONFIG_KEYS$ZIGM_NEWLINE" in
+                *"$ZIGM_NEWLINE$require_config_key$ZIGM_NEWLINE"*) ;;
+                *) warn "$ZIGM_CONFIG_FILE: unknown key '$require_config_key'" ;;
+            esac
+        done
+    else
+        debug "config file: none at $ZIGM_CONFIG_FILE"
+    fi
+
+    config_settle
 }
 
 # ---------------------------------------------------------------------------
@@ -2385,6 +2563,7 @@ main() {
 
     require_platform
     require_dirs
+    require_config
 
     case "$main_cmd" in
         install) cmd_install "$@" ;;

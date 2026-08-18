@@ -40,6 +40,9 @@
               fixture in each of the two shapes.
         - [X] `tests/test_query.sh` covers the version queries, the two
               wrappers over them, and `use` and `uninstall` end to end.
+        - [X] `tests/test_config.sh` covers the config file reader, the
+              precedence against the environment, and a whole run reading a
+              file.
 - [X] Run the tests, `shellcheck`, and a syntax check in CI.
     - [X] GitHub Actions, on push and pull request.
     - [X] Linux matrix of dash, bash, mksh, ksh, busybox ash, and zsh in sh
@@ -310,17 +313,17 @@
     - [X] Drop `require_jq`, and with it the only thing `install`, `update`,
           and `list-remote` checked for that a POSIX system would not already
           have.
-- [ ] User defined version aliases, waiting on the config file.
+- [ ] User defined version aliases, unblocked now the config file has landed.
     - The built in half landed as `latest` and `stable`, which
       `find_version_match` answers, so what is left is a name the user picks.
     - [ ] Settle where an alias is written, likely `alias.<name>` in the
-          config file, whose first version leaves the key out but whose dotted
-          names are the shape reserved for it.
+          config file, whose first key set leaves it out but whose parser
+          takes a dotted key already.
     - [ ] Settle whether an alias names a query or a concrete version, since
           one standing for `0.15` moves as `0.15.x` grows.
     - [ ] Settle what an alias shadowing a built in name or a version name
           does, likely refusing the alias rather than the version.
-- [ ] Config file.
+- [X] Config file.
     - Nothing blocks it, and three landed items already want it: the three
       download knobs, the index TTL, and a mirror preference later.
     - [X] Settle the name and the location.
@@ -359,32 +362,51 @@
     - [X] Settle whether the effective values can be inspected.
         - Settled: no subcommand for now, and `-v` names the file that was
           read, which is also how a user checks it was found at all.
-    - [ ] Parse it rather than sourcing it, since sourcing hands a config file
+    - [X] Parse it rather than sourcing it, since sourcing hands a config file
           the whole shell.
-    - [ ] Read and check it in one pass, since an unknown key warns and a bad
+        - `normalize_config` is an awk pass printing the tab separated shape
+          `json_flatten` prints, and `config_field` reads it in the style of
+          `json_field`.
+    - [X] Read and check it in one pass, since an unknown key warns and a bad
           line fails, and neither is known without looking at the whole file.
-        - [ ] Settle how the values reach the globals, since sourcing is out
+        - [X] Settle how the values reach the globals, since sourcing is out
               and a lookup per key is one pass over the file per key.
-            - An awk pass printing the tab separated shape `json_flatten`
-              prints would let a lookup in the style of `json_field` read it.
-    - [ ] Move the four defaults below the read, since they are assigned as
+            - Settled: the file is parsed once into `ZIGM_CONFIG_TEXT`, and
+              every lookup after that reads that variable rather than the
+              file, so the four knobs cost one pass in all.
+        - The parse prints nothing until the last line has been read, so a
+          file with a bad line in it prints that line's number in place of the
+          settings and no half read file reaches a caller.
+    - [X] Move the four defaults below the read, since they are assigned as
           the script loads and the file has to sit between the environment and
           them.
         - Each one stays unset until the environment, then the file, then the
           built in value has been tried, which is also what tells a value the
           file carried from one the environment set.
-    - [ ] Map the two spellings in one place, since the environment says
+        - `config_settle` is what tries the three in that order, and
+          `tests/lib.sh` calls it once, since a test that calls a single
+          function never reads a config file.
+    - [X] Map the two spellings in one place, since the environment says
           `ZIGM_RETRIES` and the file says `retries`.
-    - [ ] Check each value's shape as it is read, since a value of the wrong
+        - `config_settle` holds the four pairs, one line each, beside the
+          default that pair falls back to.
+    - [X] Check each value's shape as it is read, since a value of the wrong
           shape fails the command, and the four are all non negative integers.
-    - [ ] `-v` names the file that was read, and says so when there is none.
-    - [ ] `usage` and the README gain the file, its location, its keys, and
+        - The check is on the file's value alone, since the environment has
+          never been checked and doing so now would refuse a value an older
+          zigm took.
+    - [X] `-v` names the file that was read, and says so when there is none,
+          and names each value it settled beside where that value came from.
+    - [X] `usage` and the README gain the file, its location, its keys, and
           the precedence, beside the environment list they carry today.
-    - [ ] `tests/test_config.sh` covers the reader, the precedence against the
+    - [X] `tests/test_config.sh` covers the reader, the precedence against the
           environment, an unknown key, a bad line, and a bad value, with one
           end to end run whose file changes a knob.
         - A test names its own config directory already, so the file lands in
           scratch space like everything else.
+    - The settled note that `-q` drops the unknown key warning was not
+      followed: `warn` is loud whatever the verbosity, and `usage` says `-q`
+      prints errors and warnings only, so this one warns like every other.
 - [ ] Minisign signature verification, deferred.
 - [X] `env` sub-command to unify the environment output of `zig env`
     - Prints output of current `zig env` in JSON
