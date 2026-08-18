@@ -35,6 +35,8 @@
               reads the cached index the resolution tests already fixture.
         - [X] `tests/test_install.sh` covers install and update, over real
               tarballs built at test time and a stubbed downloader.
+        - [X] `tests/test_env.sh` covers `env`, over a zig stub printing a
+              fixture in each of the two shapes.
 - [X] Run the tests, `shellcheck`, and a syntax check in CI.
     - [X] GitHub Actions, on push and pull request.
     - [X] Linux matrix of dash, bash, mksh, ksh, busybox ash, and zsh in sh
@@ -275,6 +277,24 @@
 - [ ] Version aliases, deferred.
 - [ ] Config file, deferred.
 - [ ] Minisign signature verification, deferred.
-- [ ] `env` sub-command to unify the environment output of `zig env`
+- [X] `env` sub-command to unify the environment output of `zig env`
     - Prints output of current `zig env` in JSON
     - This was moved from JSON to ZON in zig 0.15
+    - [X] Settle what it prints, since one of the two shapes has to win.
+        - Settled: always json, so a caller reads one format whichever version
+          is active.
+    - [X] `normalize_env` takes what zig printed and prints json, passing a
+          json document through and converting a zon one.
+        - The zon zig writes here is a struct of strings, nulls, and nested
+          structs, one field to a line, so an awk over the lines is enough and
+          no zon parser is needed.
+        - A line it cannot read fails the whole command rather than being
+          guessed at, since half a document is worse than none.
+        - Commas move from the end of every field in zon to between the
+          members in json, so the converter holds one line back and decides
+          its comma once it has seen the line after it.
+        - An escape zig has and json does not, `\xNN`, is passed through as it
+          stands, since the values here are paths and version strings.
+    - [X] `cmd_env` runs the active version's zig, like `which` it resolves
+          through `versions` rather than through `current`.
+        - It takes no lock and needs no network, since it only reads.

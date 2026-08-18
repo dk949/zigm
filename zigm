@@ -107,6 +107,7 @@ commands:
   list-remote          list upstream versions, 'i' marks an installed one
   which [name]         print the path of an active binary, default 'zig'
   current              print the active version and the zls it holds
+  env                  print the active zig's 'zig env' as json
   update               install 'master' at its newest resolved version
   clean                remove the cache and any unfinished install leftovers
 
@@ -209,6 +210,15 @@ usage: zigm current
 
 Prints the active version and the zls it holds, in the columns 'list' uses,
 and fails when no version is active.
+EOF
+            ;;
+        env)
+            cat <<'EOF'
+usage: zigm env
+
+Runs the active zig's 'zig env' and prints what it says as json. Zig moved
+that output from json to zon in 0.15, so zon is converted and json is passed
+through, leaving the shape the same whichever version is active.
 EOF
             ;;
         update)
@@ -1532,6 +1542,124 @@ cmd_current() {
         "$(find_zls_note "$ZIGM_VERSIONS_DIR/$cmd_current_version")"
 }
 
+# normalize_env <the output of `zig env`>
+#
+# Prints that output as json, whichever of the two shapes zig wrote it in: json
+# up to 0.14, and zon from 0.15 on. A json document is passed through and a zon
+# one is converted, so a caller reads one format across every version.
+#
+# The zon zig writes here is a struct of strings, nulls, and nested structs,
+# one field to a line, so a line at a time is enough and no zon parser is
+# needed. A line of any other shape fails rather than being guessed at.
+#
+# An escape zig has and json does not, `\xNN` for a byte json spells `\u00NN`,
+# is passed through as it stands. The values here are paths and version
+# strings, so one would take a path holding a control character.
+normalize_env() {
+    normalize_env_head=$(printf '%s\n' "$1" |
+        sed -n '/[^[:space:]]/{s/^[[:space:]]*//;p;q;}')
+
+    case "$normalize_env_head" in
+        '{'*)
+            printf '%s\n' "$1"
+            return 0
+            ;;
+        '.{'*) ;;
+        *) return 1 ;;
+    esac
+
+    printf '%s\n' "$1" | awk '
+        # Holds one line back, since whether it takes a comma depends on the
+        # line after it: json puts none on the last member of an object.
+        function emit(text, kind,   sep) {
+            if (held != "") {
+                sep = (held_kind == "open" || kind == "close") ? "" : ","
+                print held sep
+            }
+            held = text
+            held_kind = kind
+        }
+
+        function indent(   pad, i) {
+            pad = ""
+            for (i = 0; i < depth; i++)
+                pad = pad "  "
+            return pad
+        }
+
+        {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            if (line == "")
+                next
+
+            if (line == ".{") {
+                emit(indent() "{", "open")
+                depth++
+                next
+            }
+
+            if (line == "}" || line == "},") {
+                depth--
+                if (depth < 0) {
+                    bad = 1
+                    exit
+                }
+                emit(indent() "}", "close")
+                next
+            }
+
+            if (match(line, /^\.[A-Za-z_][A-Za-z0-9_]*/) != 1) {
+                bad = 1
+                exit
+            }
+            key = substr(line, 2, RLENGTH - 1)
+            value = substr(line, RLENGTH + 1)
+            sub(/^[[:space:]]*=[[:space:]]*/, "", value)
+            sub(/,$/, "", value)
+
+            if (value == ".{") {
+                emit(indent() "\"" key "\": {", "open")
+                depth++
+                next
+            }
+
+            # An enum literal is a bare name in zon and a string in json. Zig
+            # writes none of them here today, and this keeps one out of the
+            # output as something json cannot read if it ever does.
+            if (value ~ /^\.[A-Za-z_][A-Za-z0-9_]*$/)
+                value = "\"" substr(value, 2) "\""
+
+            emit(indent() "\"" key "\": " value, "leaf")
+        }
+
+        END {
+            # A document that ended mid struct is as much a failure as a line
+            # that could not be read, since half of it would still be printed.
+            if (bad || depth != 0 || held == "")
+                exit 1
+            print held
+        }
+    '
+}
+
+cmd_env() {
+    [ "$#" -eq 0 ] || die_usage 'env takes no arguments'
+
+    cmd_env_version=$(find_link_version "$ZIGM_CURRENT_LINK") ||
+        die "no version is active, run 'zigm use <version>'"
+
+    cmd_env_zig="$ZIGM_VERSIONS_DIR/$cmd_env_version/zig"
+    [ -x "$cmd_env_zig" ] || die "zig $cmd_env_version has no 'zig'"
+
+    cmd_env_out=$("$cmd_env_zig" env) ||
+        die "'zig env' failed for zig $cmd_env_version"
+
+    normalize_env "$cmd_env_out" ||
+        die "cannot read the output of 'zig env' for zig $cmd_env_version"
+}
+
 cmd_update() {
     ZIGM_NO_ZLS=0
     ZIGM_FORCE=0
@@ -1683,6 +1811,7 @@ main() {
         list-remote) cmd_list_remote "$@" ;;
         which) cmd_which "$@" ;;
         current) cmd_current "$@" ;;
+        env) cmd_env "$@" ;;
         update) cmd_update "$@" ;;
         clean) cmd_clean "$@" ;;
         *) die_usage "unknown command '$main_cmd'" ;;

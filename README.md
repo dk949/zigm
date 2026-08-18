@@ -98,6 +98,10 @@ covers the rest.
 * `current`
     * Print the active version and the zls it holds, in the columns `list`
       uses.
+* `env`
+    * Run the active zig's `zig env` and print what it says as json. Zig moved
+      that output from json to zon in 0.15, so zon is converted and json is
+      passed through.
 * `update`
     * Install `master` at whatever version it resolves to now.
 * `clean`
@@ -147,6 +151,7 @@ zigm use 0.14.1              # switch
 zigm list                    # see what is installed
 zigm current                 # 0.14.1                      zls 0.14.0
 zigm which zls               # path to the active zls
+zigm env | jq -r .lib_dir    # the active zig's env, as json
 zigm update                  # move master forward
 zigm uninstall 0.14.1        # remove a version
 ```
@@ -174,7 +179,7 @@ zigm uninstall 0.14.1        # remove a version
   A lock whose owner is gone is reclaimed automatically; one left behind
   before its owner could be recorded has to be removed by hand, which the
   message says. The commands that only read, `list`, `list-remote`, `which`,
-  and `current`, take nothing and run at any time.
+  `current`, and `env`, take nothing and run at any time.
 * zig versions come from the ziglang.org download index, cached in the cache
   directory for `ZIGM_INDEX_TTL` seconds.
 * zls versions come from the zigtools version selection API, which pairs zig
