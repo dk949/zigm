@@ -335,3 +335,52 @@
     - [X] `cmd_env` runs the active version's zig, like `which` it resolves
           through `versions` rather than through `current`.
         - It takes no lock and needs no network, since it only reads.
+- [ ] Follow upstream's download policy, which points tooling at the community
+      mirrors rather than at ziglang.org.
+    - [ ] Check what the policy asks for today, since the mirror list is its
+          own file and `index.json` is of uncertain lifetime.
+    - A mirror is not trusted, so this waits on minisign verification, which
+      is what makes installing from one safe.
+    - A config file is likely wanted too, for a user who prefers one mirror or
+      wants ziglang.org back.
+- [ ] Test the command lines the downloaders are called with.
+    - `tests/test_install.sh` replaces `fetch_file` and `fetch_stdout`, so no
+      test sees the flags either downloader is given.
+    - Defining `curl` and `wget` as functions that record their arguments
+      would cover both.
+    - Busybox parses its options per applet, so the `--` these pass is the
+      shape that had to come out of `fetch_cached`'s `dirname` call.
+- [ ] Give both downloaders a connect timeout and a retry count.
+    - A hung mirror otherwise hangs an install with no output and no way out
+      of it but a kill.
+    - `--connect-timeout` and `--retry` on curl, `-T` and `-t` on wget.
+    - A config file would be where a user changes them, though the defaults
+      themselves do not need one.
+- [ ] Say why a download failed, not only that it did.
+    - `curl -fsS` and `wget -q` swallow the reason, so a 404, a DNS failure,
+      and a TLS failure all reach the user as `cannot download <url>`.
+    - One sentence on stderr is the whole of what the terminal gets, with the
+      detail going to the log file below.
+- [ ] Write a log file, holding the detail the terminal does not carry.
+    - [ ] Settle where it lives, since the cache is cleared on demand and a
+          log is not, so a state directory may be wanted.
+    - [ ] Settle whether it is one file or one per run, and how much of it is
+          kept.
+- [ ] Accept a partial version, resolving `0.15` to the newest `0.15.x`.
+    - [ ] Build it as the version query mechanism the deferred aliases reuse,
+          since both turn what the user typed into a concrete version.
+    - [ ] Add `latest` and `stable` as built in aliases, the one naming
+          `master`, which already covers it, and the other the newest tagged
+          release.
+- [ ] Keep the nightlies from piling up, deferred.
+    - `master` re-resolves on every install, so each one leaves the last
+      nightly behind and only an explicit uninstall removes it.
+    - [ ] Settle the shape, likely `zigm keep <version>` to pin one and
+          `zigm prune` to drop the rest.
+- [ ] Run one command under a version without activating it, deferred.
+    - `zigm which` already prints the path to run, so this may not be worth a
+      subcommand of its own.
+- [ ] Warn when the `current` directory is not on `PATH`, as the last step of
+      an install.
+    - It is the one piece of setup zigm leaves to the user, so it is the most
+      likely thing to be missing.
