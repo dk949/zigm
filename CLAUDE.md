@@ -21,6 +21,10 @@ state lives in `TODO.md`.
   * `SHELLS='dash bash mksh ksh busybox zsh' tests/run.sh`, runs it under each
     named shell, syntax checking `zigm` under that shell first
   * `tests/run.sh tests/test_dirs.sh`, runs one file
+* A shell or tool that is not installed can be fetched with nix, which is
+  available here:
+  * `nix shell nixpkgs#busybox nixpkgs#mksh --command tests/run.sh`
+  * `nix run nixpkgs#busybox -- wget --help`
 * There is no build step.
 
 ## Design decisions
