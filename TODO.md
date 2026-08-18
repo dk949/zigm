@@ -343,24 +343,47 @@
       is what makes installing from one safe.
     - A config file is likely wanted too, for a user who prefers one mirror or
       wants ziglang.org back.
-- [ ] Test the command lines the downloaders are called with.
+- [X] Test the command lines the downloaders are called with.
     - `tests/test_install.sh` replaces `fetch_file` and `fetch_stdout`, so no
       test sees the flags either downloader is given.
-    - Defining `curl` and `wget` as functions that record their arguments
-      would cover both.
+    - [X] `tests/test_fetch.sh` defines `curl` and `wget` as functions that
+          record their arguments, which covers both.
+        - A stub runs inside a command substitution, so one counting its calls
+          counts them in a file rather than in a variable, which would not
+          survive the subshell.
     - Busybox parses its options per applet, so the `--` these pass is the
       shape that had to come out of `fetch_cached`'s `dirname` call.
-- [ ] Give both downloaders a connect timeout and a retry count.
+- [X] Give both downloaders a connect timeout and a retry count.
     - A hung mirror otherwise hangs an install with no output and no way out
       of it but a kill.
-    - `--connect-timeout` and `--retry` on curl, `-T` and `-t` on wget.
-    - A config file would be where a user changes them, though the defaults
-      themselves do not need one.
-- [ ] Say why a download failed, not only that it did.
+    - [X] Settle where the retry lives, since busybox wget has `-T` but no
+          `-t` and refuses the whole download when given one.
+        - Settled: the timeout is the downloader's, `--connect-timeout` on
+          curl and `-T` on wget, and the retry is a loop in `fetch_retry`,
+          which is the same on either tool and on either wget.
+    - [X] GNU wget retries 20 times on its own, which multiplies that loop, so
+          it is told `-t 1` when its help names the option.
+    - [X] `ZIGM_CONNECT_TIMEOUT`, `ZIGM_RETRIES`, and `ZIGM_RETRY_DELAY` set
+          the three numbers, and a config file would be where a user changes
+          them once there is one.
+    - [X] A body bound for stdout is held back until the downloader is done
+          with it, so a transfer cut off halfway is dropped rather than mixed
+          with the retry that follows.
+- [X] Say why a download failed, not only that it did.
     - `curl -fsS` and `wget -q` swallow the reason, so a 404, a DNS failure,
       and a TLS failure all reach the user as `cannot download <url>`.
-    - One sentence on stderr is the whole of what the terminal gets, with the
-      detail going to the log file below.
+    - [X] Neither downloader is asked to be quiet about a failure any more,
+          and `fetch_retry` captures their stderr rather than showing it, so
+          an attempt that is tried again says nothing.
+        - The capture keeps the body and the diagnostics apart by putting the
+          body on fd 3, opened on a group around the assignment rather than on
+          the assignment itself, since a shell is free to expand the one
+          before it applies the redirection, and bash does.
+    - [X] The terminal gets the last two lines the downloader wrote, above
+          zigm's own message, and everything it wrote under `-v`.
+        - curl says the whole of it in one line, while wget puts the reason in
+          the line before its last, which is often no more than `Giving up.`.
+    - The log file below is still where the rest of the detail should go.
 - [ ] Write a log file, holding the detail the terminal does not carry.
     - [ ] Settle where it lives, since the cache is cleared on demand and a
           log is not, so a state directory may be wanted.

@@ -135,6 +135,11 @@ covers the rest.
 * `ZIGM_CONFIG_DIR`, override the config directory.
 * `ZIGM_INDEX_TTL`, seconds a cached download index stays fresh, 3600 by
   default.
+* `ZIGM_CONNECT_TIMEOUT`, seconds a download waits on a connection, 15 by
+  default.
+* `ZIGM_RETRIES`, how many times a failed download is tried again, 2 by
+  default.
+* `ZIGM_RETRY_DELAY`, seconds between those tries, 1 by default.
 
 ### Exit codes
 
@@ -173,6 +178,11 @@ zigm uninstall 0.14.1        # remove a version
   old directory aside and puts it back if the swap fails.
 * Downloads are checked against the checksum upstream publishes for them. A
   mismatch is fatal; having nothing to compare against is a warning.
+* A download gives up on a connection after `ZIGM_CONNECT_TIMEOUT` seconds and
+  is tried again `ZIGM_RETRIES` times, so a mirror that stops answering fails
+  the command rather than hanging it. When the last try fails, the reason curl
+  or wget gave is printed above zigm's own message, and `-v` prints everything
+  the downloader wrote.
 * Every command that writes, `install`, `update`, `use`, `uninstall`, and
   `clean`, takes a lock over the data directory first, so two of them cannot
   work on one version at once. The lock is the directory `<data>/zigm/.lock`,

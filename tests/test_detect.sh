@@ -94,6 +94,30 @@ test_require_downloader_sets_the_global() {
     assert_eq curl "$ZIGM_DOWNLOADER" 'downloader'
 }
 
+test_require_downloader_asks_wget_about_its_tries() {
+    ZIGM_FAKE_HAVE='wget'
+    wget() {
+        printf '  -t,  --tries=NUMBER   set number of retries to NUMBER\n'
+    }
+    require_downloader
+    assert_eq wget "$ZIGM_DOWNLOADER" 'downloader'
+    assert_eq 1 "$ZIGM_WGET_TRIES" 'tries option'
+
+    wget() {
+        printf 'Usage: wget [-cqS] [-O FILE] [-T SEC] URL...\n'
+    }
+    require_downloader
+    assert_eq 0 "$ZIGM_WGET_TRIES" 'tries option'
+}
+
+# curl is never asked, since it makes no retries of its own.
+test_require_downloader_leaves_the_tries_option_alone_for_curl() {
+    ZIGM_FAKE_HAVE='curl'
+    ZIGM_WGET_TRIES=1
+    require_downloader
+    assert_eq 0 "$ZIGM_WGET_TRIES" 'tries option'
+}
+
 test_require_downloader_dies_without_one() {
     ZIGM_FAKE_HAVE=''
     assert_status "$ZIGM_EX_ERROR" require_downloader
