@@ -117,7 +117,7 @@ The global options are accepted after the command as well as before it, and
 'zigm <command> --help' describes one command on its own.
 
 commands:
-  install <version>    install a zig and zls pair, 'master' for nightly
+  install <version>    install a zig and zls pair
   use <version>        point 'current' at an installed version
   uninstall <version>  remove an installed version
   list                 list installed versions and the zls each one holds
@@ -127,6 +127,12 @@ commands:
   env                  print the active zig's 'zig env' as json
   update               install 'master' at its newest resolved version
   clean                remove the cache and any unfinished install leftovers
+
+version arguments:
+  0.15.1               that version, whatever it is named upstream
+  0.15                 the newest release of that line, tagged ones only
+  stable               the newest tagged release
+  master, latest       the nightly, kept under the version it resolves to
 
 install and update options:
       --no-zls         install zig alone rather than failing when no zls pairs
@@ -163,8 +169,9 @@ usage_command() {
 usage: zigm install [options] <version>
 
 Installs a matched zig and zls pair and points 'current' at it. The version is
-a tagged release, or 'master' for the nightly, which is stored under the
-version it resolves to.
+answered against the upstream index: '0.15.1' names itself, '0.15' the newest
+release of that line, 'stable' the newest tagged release, and 'master', or
+'latest', the nightly, which is stored under the version it resolves to.
 
 options:
       --no-zls   install zig alone rather than failing when no zls pairs
@@ -181,16 +188,17 @@ EOF
 usage: zigm use <version>
 
 Points 'current' at an installed version, in one symlink swap. The version is
-the one 'zigm list' names, so a nightly is asked for by the version it was
-installed under rather than by 'master'.
+answered against the installed ones, so '0.15' names the newest installed
+0.15.x and 'stable' the newest installed tagged release. A nightly is asked
+for by the version it was installed under rather than by 'master'.
 EOF
             ;;
         uninstall)
             cat <<'EOF'
 usage: zigm uninstall <version>
 
-Removes an installed version. Removing the active one drops the 'current' link
-first, leaving no version active.
+Removes an installed version, named as 'zigm use' names one. Removing the
+active version drops the 'current' link first, leaving no version active.
 EOF
             ;;
         list)
@@ -1384,6 +1392,116 @@ swap_link() {
 }
 
 # ---------------------------------------------------------------------------
+# Version queries
+#
+# What the user names on the command line is a query rather than a version: an
+# alias, a partial version, or a concrete version standing for itself. A query
+# is answered against a list of versions, the installed ones for the commands
+# that only read local state and the upstream ones for the commands that
+# install.
+# ---------------------------------------------------------------------------
+
+# is_exact_version <name>
+#
+# True when a name needs no resolution: `master`, or three numeric components
+# with an optional pre-release or build suffix. Anything else is a query.
+is_exact_version() {
+    case "$1" in
+        master) return 0 ;;
+    esac
+
+    printf '%s\n' "$1" |
+        grep -qE '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*([-+].*)?$'
+}
+
+# find_version_match <newline separated versions> <query>
+#
+# Prints the version a query names, and fails when the list answers it with
+# nothing:
+#
+#   * `latest` is `master`, which every caller understands already,
+#   * `stable` is the newest tagged release in the list,
+#   * a name the list carries is itself, so a nightly is nameable in full,
+#   * anything else is a leading run of whole components, `0.15` naming the
+#     newest `0.15.x`.
+#
+# Only a tagged release answers a partial query or `stable`. A nightly moves
+# under the release it leads up to, so one is asked for by `master` or by the
+# version it was stored under.
+find_version_match() {
+    [ -n "$2" ] || return 1
+
+    case "$2" in
+        latest)
+            printf 'master\n'
+            return 0
+            ;;
+        stable) find_version_match_prefix='' ;;
+        *)
+            # An exact name wins over the newest match below, so a version
+            # whose name is a prefix of another still resolves to itself.
+            if printf '%s\n' "$1" | awk -v q="$2" '
+                $0 == q { hit = 1 }
+                END { exit(hit ? 0 : 1) }
+            '; then
+                printf '%s\n' "$2"
+                return 0
+            fi
+            find_version_match_prefix="$2."
+            ;;
+    esac
+
+    find_version_match_hit=$(printf '%s\n' "$1" |
+        awk -v prefix="$find_version_match_prefix" '
+            /^[0-9]+\.[0-9]+\.[0-9]+$/ &&
+                (prefix == "" || index($0, prefix) == 1)
+        ' | sort_versions | tail -n 1)
+
+    [ -n "$find_version_match_hit" ] || return 1
+    printf '%s\n' "$find_version_match_hit"
+}
+
+# require_local_version <query>
+#
+# Sets ZIGM_WANTED_VERSION to the installed version a query names. A concrete
+# version is taken as it stands, so a caller reports one that is not installed
+# in its own words rather than as a query that matched nothing. Requires
+# require_dirs.
+require_local_version() {
+    if is_exact_version "$1"; then
+        ZIGM_WANTED_VERSION="$1"
+        return 0
+    fi
+
+    ZIGM_WANTED_VERSION=$(find_version_match \
+        "$(find_versions "$ZIGM_VERSIONS_DIR")" "$1") ||
+        die "no installed version matches '$1', see 'zigm list'"
+
+    debug "'$1' is zig $ZIGM_WANTED_VERSION"
+}
+
+# require_remote_version <query>
+#
+# Sets ZIGM_WANTED_VERSION to the upstream version a query names. The index is
+# fetched only for a query that needs it, so a concrete version costs nothing
+# here and fails later with the download index in hand. Requires
+# require_platform and require_downloader.
+require_remote_version() {
+    if is_exact_version "$1"; then
+        ZIGM_WANTED_VERSION="$1"
+        return 0
+    fi
+
+    require_index
+
+    ZIGM_WANTED_VERSION=$(find_version_match "$(find_remote_versions \
+        "$ZIGM_INDEX_FILE" "$ZIGM_ARCH" "$ZIGM_OS")" "$1") ||
+        die "no zig matching '$1' for $ZIGM_ARCH-$ZIGM_OS in the download index"
+
+    debug "'$1' is zig $ZIGM_WANTED_VERSION"
+}
+
+# ---------------------------------------------------------------------------
 # Install
 #
 # An install is assembled in a dot prefixed scratch directory beside the
@@ -1778,8 +1896,9 @@ cmd_install() {
     require_sha256
     ensure_dirs
     require_lock
+    require_remote_version "$cmd_install_version"
 
-    install_version "$cmd_install_version" "$cmd_install_use"
+    install_version "$ZIGM_WANTED_VERSION" "$cmd_install_use"
 }
 
 cmd_use() {
@@ -1787,20 +1906,22 @@ cmd_use() {
     is_version_name "$1" || die_usage "'$1' is not a version"
     ensure_dirs
     require_lock
+    require_local_version "$1"
 
-    cmd_use_dir="$ZIGM_VERSIONS_DIR/$1"
+    cmd_use_dir="$ZIGM_VERSIONS_DIR/$ZIGM_WANTED_VERSION"
     if [ ! -d "$cmd_use_dir" ]; then
         # master is stored under the dev version it resolved to, so it never
-        # names a directory of its own.
-        [ "$1" != master ] ||
+        # names a directory of its own, and `latest` resolves to master.
+        [ "$ZIGM_WANTED_VERSION" != master ] ||
             die "master is installed under its resolved version, see 'zigm list'"
-        die "zig $1 is not installed, run 'zigm install $1'"
+        die "zig $ZIGM_WANTED_VERSION is not installed," \
+            "run 'zigm install $ZIGM_WANTED_VERSION'"
     fi
 
     swap_link "$cmd_use_dir" "$ZIGM_CURRENT_LINK" ||
         die "cannot point $ZIGM_CURRENT_LINK at $cmd_use_dir"
 
-    info "now using zig $1"
+    info "now using zig $ZIGM_WANTED_VERSION"
 }
 
 cmd_uninstall() {
@@ -1810,23 +1931,27 @@ cmd_uninstall() {
     # Taken before the version is looked for, so no install can arrive between
     # the look and the removal.
     require_lock
+    require_local_version "$1"
 
     # is_version_name has already refused an empty name and a name holding a
-    # slash or a dot, so a non-empty versions directory keeps the removal below
-    # away from the root.
-    cmd_uninstall_dir="${ZIGM_VERSIONS_DIR:?}/$1"
-    [ -d "$cmd_uninstall_dir" ] || die "zig $1 is not installed"
+    # slash or a dot, and a resolved one names a directory that is there, so a
+    # non-empty versions directory keeps the removal below away from the root.
+    cmd_uninstall_dir="${ZIGM_VERSIONS_DIR:?}/$ZIGM_WANTED_VERSION"
+    [ -d "$cmd_uninstall_dir" ] ||
+        die "zig $ZIGM_WANTED_VERSION is not installed"
 
     # Drop the link first, so an interrupted removal cannot leave `current`
     # pointing into a half deleted directory.
-    if [ "$(find_link_version "$ZIGM_CURRENT_LINK")" = "$1" ]; then
+    cmd_uninstall_active=$(find_link_version "$ZIGM_CURRENT_LINK") ||
+        cmd_uninstall_active=''
+    if [ "$cmd_uninstall_active" = "$ZIGM_WANTED_VERSION" ]; then
         rm -f -- "$ZIGM_CURRENT_LINK" ||
             die "cannot remove $ZIGM_CURRENT_LINK"
-        warn "zig $1 was active, no version is active now"
+        warn "zig $ZIGM_WANTED_VERSION was active, no version is active now"
     fi
 
     rm -rf -- "$cmd_uninstall_dir" || die "cannot remove $cmd_uninstall_dir"
-    info "removed zig $1"
+    info "removed zig $ZIGM_WANTED_VERSION"
 }
 
 cmd_list() {

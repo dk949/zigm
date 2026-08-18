@@ -79,8 +79,7 @@ covers the rest.
 ### Commands
 
 * `install <version>`
-    * Install a zig and zls pair and activate it. The version is a tag such as
-      `0.15.1`, or `master` for the nightly. A version that is already
+    * Install a zig and zls pair and activate it. A version that is already
       installed is left as it is, except that one holding no zls gains the zls
       it pairs with.
 * `use <version>`
@@ -109,6 +108,24 @@ covers the rest.
     * Remove the cache directory, and the scratch directories an install
       killed partway through left under `versions`. A reinstall that never
       finished puts its old version back rather than losing it.
+
+### Version arguments
+
+A version argument is a query rather than a name, and the commands that install
+answer it against the upstream index while `use` and `uninstall` answer it
+against what is installed:
+
+* `0.15.1`, that version, whichever list it is looked for in.
+* `0.15`, the newest release of that line, `0.15.1` where both are there. The
+  query is a leading run of whole components, so `0.15` never matches `0.150.0`.
+* `stable`, the newest tagged release.
+* `master`, or `latest`, the nightly. Only `install` and `update` take it, since
+  a nightly is stored under the version it resolved to and `use` wants that
+  version by name.
+
+A partial version and `stable` are answered by a tagged release alone. A
+nightly moves under the release it leads up to, so it is asked for by `master`
+or by the version it was installed under.
 
 ### Install and update options
 
@@ -151,9 +168,11 @@ covers the rest.
 
 ```sh
 zigm install 0.15.1          # install and activate a tagged release
+zigm install stable          # the newest tagged release, whatever it is
 zigm install master          # install tonight's nightly
 zigm install 0.14.1 --no-use # install without switching to it
 zigm use 0.14.1              # switch
+zigm use 0.14                # switch to the newest installed 0.14.x
 zigm list                    # see what is installed
 zigm current                 # 0.14.1                      zls 0.14.0
 zigm which zls               # path to the active zls

@@ -38,6 +38,8 @@
               tarballs built at test time and a stubbed downloader.
         - [X] `tests/test_env.sh` covers `env`, over a zig stub printing a
               fixture in each of the two shapes.
+        - [X] `tests/test_query.sh` covers the version queries, the two
+              wrappers over them, and `use` and `uninstall` end to end.
 - [X] Run the tests, `shellcheck`, and a syntax check in CI.
     - [X] GitHub Actions, on push and pull request.
     - [X] Linux matrix of dash, bash, mksh, ksh, busybox ash, and zsh in sh
@@ -389,12 +391,30 @@
           log is not, so a state directory may be wanted.
     - [ ] Settle whether it is one file or one per run, and how much of it is
           kept.
-- [ ] Accept a partial version, resolving `0.15` to the newest `0.15.x`.
-    - [ ] Build it as the version query mechanism the deferred aliases reuse,
+- [X] Accept a partial version, resolving `0.15` to the newest `0.15.x`.
+    - [X] Build it as the version query mechanism the deferred aliases reuse,
           since both turn what the user typed into a concrete version.
-    - [ ] Add `latest` and `stable` as built in aliases, the one naming
+        - `find_version_match` answers a query against a list of versions, and
+          the two `require_*` wrappers over it name the list: the installed
+          versions for `use` and `uninstall`, the index for `install`.
+        - `is_exact_version` is what keeps a concrete version out of all of
+          that, so it costs no index fetch and fails in the words it did
+          before.
+    - [X] Add `latest` and `stable` as built in aliases, the one naming
           `master`, which already covers it, and the other the newest tagged
           release.
+    - [X] Settle which commands take a query.
+        - Settled: `install` and `update` answer one against the index, `use`
+          and `uninstall` against what is installed, and no other command
+          names a version.
+    - [X] Settle whether a partial version may answer with a nightly.
+        - Settled: no, a tagged release alone, since a nightly moves under the
+          release it leads up to and the answer would depend on the day.
+        - An exact name still reaches a nightly, so one is nameable in full.
+        - `use latest` is therefore `use master`, which says that a nightly is
+          stored under the version it resolved to.
+    - [X] A name the list carries wins over the newest match, so a version
+          whose name is a prefix of another resolves to itself.
 - [ ] Keep the nightlies from piling up, deferred.
     - `master` re-resolves on every install, so each one leaves the last
       nightly behind and only an explicit uninstall removes it.
