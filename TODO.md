@@ -310,11 +310,81 @@
     - [X] Drop `require_jq`, and with it the only thing `install`, `update`,
           and `list-remote` checked for that a POSIX system would not already
           have.
-- [ ] Version aliases, deferred.
-- [ ] Config file, deferred.
-    - [ ] Use a format simpler to read and write than json, like
-          `conf`, since nothing in the script writes json and the
-          parser above only reads it.
+- [ ] User defined version aliases, waiting on the config file.
+    - The built in half landed as `latest` and `stable`, which
+      `find_version_match` answers, so what is left is a name the user picks.
+    - [ ] Settle where an alias is written, likely `alias.<name>` in the
+          config file, whose first version leaves the key out but whose dotted
+          names are the shape reserved for it.
+    - [ ] Settle whether an alias names a query or a concrete version, since
+          one standing for `0.15` moves as `0.15.x` grows.
+    - [ ] Settle what an alias shadowing a built in name or a version name
+          does, likely refusing the alias rather than the version.
+- [ ] Config file.
+    - Nothing blocks it, and three landed items already want it: the three
+      download knobs, the index TTL, and a mirror preference later.
+    - [X] Settle the name and the location.
+        - Settled: `<config>/zigm.conf`, one fixed path, since
+          `ZIGM_CONFIG_DIR` already redirects it for a custom prefix and for a
+          test, so neither a `--config` flag nor a second env var is wanted.
+    - [X] Settle the format.
+        - Settled: flat `key = value` lines, `#` comments, surrounding space
+          ignored, and a dot grouping related keys, as in `alias.work`, so
+          nothing has to carry a section while reading.
+    - [X] Settle the key set.
+        - Settled: the four knobs that are env only today, `connect_timeout`,
+          `retries`, `retry_delay`, and `index_ttl`.
+        - Aliases, the directories, and per command flag defaults are all left
+          out of the first version, though the dotted names above are the
+          shape an alias would take.
+    - [X] Settle the precedence.
+        - Settled: a flag over the environment over the file over the built in
+          default, so the file holds a default a single run can still override
+          without editing it.
+        - The defaults are assigned as the script loads, so a value the file
+          carries cannot be told from one the environment set until that
+          assignment moves below the read.
+    - [X] Settle when it is read.
+        - Settled: once in `main`, after `require_dirs`, whatever the command,
+          so every command sees the same values and one place reports a
+          failure.
+    - [X] Settle what a key the script does not know does.
+        - Settled: a warning and a carry on, so an older zigm reads a file
+          written for a newer one, and `-q` drops the warning like any other.
+    - [X] Settle what a line the parser cannot read, or a value of the wrong
+          shape, does.
+        - Settled: it fails the command, the way `normalize_env` refuses a
+          line it cannot read, since either one is a mistake rather than a
+          difference between versions.
+    - [X] Settle whether the effective values can be inspected.
+        - Settled: no subcommand for now, and `-v` names the file that was
+          read, which is also how a user checks it was found at all.
+    - [ ] Parse it rather than sourcing it, since sourcing hands a config file
+          the whole shell.
+    - [ ] Read and check it in one pass, since an unknown key warns and a bad
+          line fails, and neither is known without looking at the whole file.
+        - [ ] Settle how the values reach the globals, since sourcing is out
+              and a lookup per key is one pass over the file per key.
+            - An awk pass printing the tab separated shape `json_flatten`
+              prints would let a lookup in the style of `json_field` read it.
+    - [ ] Move the four defaults below the read, since they are assigned as
+          the script loads and the file has to sit between the environment and
+          them.
+        - Each one stays unset until the environment, then the file, then the
+          built in value has been tried, which is also what tells a value the
+          file carried from one the environment set.
+    - [ ] Map the two spellings in one place, since the environment says
+          `ZIGM_RETRIES` and the file says `retries`.
+    - [ ] Check each value's shape as it is read, since a value of the wrong
+          shape fails the command, and the four are all non negative integers.
+    - [ ] `-v` names the file that was read, and says so when there is none.
+    - [ ] `usage` and the README gain the file, its location, its keys, and
+          the precedence, beside the environment list they carry today.
+    - [ ] `tests/test_config.sh` covers the reader, the precedence against the
+          environment, an unknown key, a bad line, and a bad value, with one
+          end to end run whose file changes a knob.
+        - A test names its own config directory already, so the file lands in
+          scratch space like everything else.
 - [ ] Minisign signature verification, deferred.
 - [X] `env` sub-command to unify the environment output of `zig env`
     - Prints output of current `zig env` in JSON
@@ -387,10 +457,48 @@
           the line before its last, which is often no more than `Giving up.`.
     - The log file below is still where the rest of the detail should go.
 - [ ] Write a log file, holding the detail the terminal does not carry.
-    - [ ] Settle where it lives, since the cache is cleared on demand and a
-          log is not, so a state directory may be wanted.
-    - [ ] Settle whether it is one file or one per run, and how much of it is
-          kept.
+    - [X] Settle where it lives.
+        - Settled: a state directory, a fourth kind beside data, cache, and
+          config, `XDG_STATE_HOME/zigm` on Linux and BSD and
+          `~/Library/Application Support/zigm` on Darwin, which is where its
+          state already goes.
+        - The log is `<state>/log`, and the `use -` record below is
+          `<state>/previous`, so the state directory serves both.
+        - `base_dir` gains the kind, `require_dirs` the global, and
+          `ZIGM_STATE_DIR` overrides it the way the other three are overridden.
+    - [X] Settle whether it is one file or one per run, and how much is kept.
+        - Settled: one file every run appends to, and a run that finds it over
+          a size cap keeps the tail and drops the rest, so nothing has to
+          sweep it and it never grows without bound.
+        - [ ] Settle the cap, and whether a key sets it, which the config file
+              settled above leaves out of its first key set.
+    - [X] Settle what is written to it.
+        - Settled: everything `-v` prints, whatever the verbosity of the run,
+          the downloader output the terminal shows two lines of, and a line at
+          each end of the run naming the command line and the exit status.
+    - [X] Settle whether it is written by default.
+        - Settled: yes, since a failure is only reported out of a log that was
+          already being written, and the cap bounds what that costs.
+    - [X] Settle how a line is stamped.
+        - Settled: once per run, in the run line, which carries the pid and
+          `date '+%Y-%m-%d %H:%M:%S'`, whose conversion specs are POSIX where
+          `%s` is not.
+        - Everything below that line is unstamped, so an appended block costs
+          nothing per line and one `date` covers the run.
+    - [X] Settle what a log that cannot be written does.
+        - Settled: one warning, dropped by `-q`, and the command carries on,
+          since no work depends on the log, but a state directory that cannot
+          be written is worth saying once.
+    - [X] Settle whether two runs may write at once.
+        - Settled: every write is an append and every line carries the pid, so
+          two runs are told apart rather than kept apart, which the read only
+          commands need since they take no lock.
+        - The trim is the racy part, and only a run that finds the file over
+          the cap does it.
+    - [X] Settle whether `clean` removes it.
+        - Settled: no, `clean` keeps to the cache and the install scratch,
+          both rebuilt on demand, while the cap is what bounds the log and a
+          log is the one thing a user still wants after a failure.
 - [X] Accept a partial version, resolving `0.15` to the newest `0.15.x`.
     - [X] Build it as the version query mechanism the deferred aliases reuse,
           since both turn what the user typed into a concrete version.
@@ -420,9 +528,22 @@
       nightly behind and only an explicit uninstall removes it.
     - [ ] Settle the shape, likely `zigm keep <version>` to pin one and
           `zigm prune` to drop the rest.
-- [ ] Run one command under a version without activating it, deferred.
-    - `zigm which` already prints the path to run, so this may not be worth a
-      subcommand of its own.
+- [ ] Run one command under a version without activating it.
+    - `zigm which` already prints the path to run, so what this adds is not
+      having to spell that path out.
+    - [ ] Settle whether it earns a subcommand at all, since a shell function
+          over `which` covers most of it.
+    - [ ] Settle the name, `run` or `exec`, and the shape, likely
+          `zigm run <version> <command> [args...]`.
+    - [ ] Settle how the version reaches the command, since putting its
+          directory on `PATH` also covers a zig the command runs itself, while
+          resolving the command under it does not.
+    - [ ] Settle what an argument shaped like a zigm flag does, since
+          everything past the command name belongs to the command.
+    - [ ] Settle what an uninstalled version does, likely failing rather than
+          installing it.
+    - It takes no lock and needs no network, since it only reads, and a query
+      resolves against the installed versions the way `use` does.
 - [X] Warn when the `current` directory is not on `PATH`, as the last step of
       an install.
     - It is the one piece of setup zigm leaves to the user, so it is the most
@@ -451,3 +572,16 @@
           reaches `printf` through it.
 - [ ] Add an alias `-`, when used as `zigm use -`, reverts back to the previous
       used version.
+    - [X] Settle where the previous version is recorded.
+        - Settled: `<state>/previous`, in the state directory the log file
+          item settled above, since the `.zigm` meta is per version and this
+          record belongs to neither a version nor the cache.
+    - [ ] Settle who writes it, likely every caller of `swap_link`, so an
+          activation records what it replaced whether it came from `use`,
+          `install`, or `update`.
+    - [ ] Settle what two `use -` runs in a row do, which is a swap back and
+          forth once every activation writes the record.
+    - [ ] Settle what a record naming an uninstalled version does, and what a
+          missing record does, likely an error naming which of the two it is.
+    - [ ] Keep `-` out of `find_version_match`, since `use` resolves it to a
+          version first, the way a concrete name never reaches a query.
