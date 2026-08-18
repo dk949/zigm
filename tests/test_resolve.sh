@@ -2,9 +2,10 @@
 #
 # Tests for the index cache and for zig and zls version resolution.
 #
-# These need jq, which zigm requires anyway. Nothing here touches the network:
-# the index tests write a fixture into a scratch cache directory and stamp it
-# fresh, and the zls tests replace `fetch_stdout` with a stub.
+# Nothing here touches the network: the index tests write a fixture into a
+# scratch cache directory and stamp it fresh, and the zls tests replace
+# `fetch_stdout` with a stub. The lookups take a flattened document rather than
+# json, so the fixtures below are put through `json_flatten` first.
 
 # The stub functions below are called by the code under test, never directly,
 # and the globals set below are read by the sourced zigm, not by this file.
@@ -76,6 +77,15 @@ zigm_write_index() {
 EOF
 }
 
+# A literal tab, which is what separates the fields of a flattened document.
+zigm_tab=$(printf '\t')
+
+# Flattens a json document given as an argument, so a fixture can stay readable
+# as json in the tests that feed one to a lookup.
+zigm_flatten() {
+    printf '%s\n' "$1" | json_flatten
+}
+
 # A zls version selection response, which spells 32 bit arm `armv7a`.
 zigm_zls_json='{
   "version": "0.15.0",
@@ -136,27 +146,31 @@ i386-linux' target_candidates i386 linux
 }
 
 test_find_target_picks_the_key_that_is_there() {
-    zigm_json='{"arm-linux":{},"x86_64-linux":{}}'
-    assert_out arm-linux find_target "$zigm_json" armv7a linux
-    assert_out x86_64-linux find_target "$zigm_json" x86_64 linux
+    zigm_flat=$(zigm_flatten '{"arm-linux":{},"x86_64-linux":{}}')
+    assert_out arm-linux find_target "$zigm_flat" armv7a linux
+    assert_out x86_64-linux find_target "$zigm_flat" x86_64 linux
 }
 
 test_find_target_falls_back_to_the_old_spelling() {
-    assert_out armv7a-linux find_target '{"armv7a-linux":{}}' arm linux
-    assert_out i386-linux find_target '{"i386-linux":{}}' x86 linux
+    assert_out armv7a-linux \
+        find_target "$(zigm_flatten '{"armv7a-linux":{}}')" arm linux
+    assert_out i386-linux \
+        find_target "$(zigm_flatten '{"i386-linux":{}}')" x86 linux
 }
 
 test_find_target_fails_when_the_platform_is_missing() {
-    assert_fails find_target '{"x86_64-linux":{}}' aarch64 macos
-    assert_fails find_target 'not json' x86_64 linux
+    assert_fails find_target \
+        "$(zigm_flatten '{"x86_64-linux":{}}')" aarch64 macos
+    assert_fails find_target 'not flattened' x86_64 linux
 }
 
 test_find_target_field_reads_one_field() {
-    zigm_json='{"x86_64-linux":{"tarball":"https://example.invalid/z.tar.xz"}}'
+    zigm_flat=$(zigm_flatten \
+        '{"x86_64-linux":{"tarball":"https://example.invalid/z.tar.xz"}}')
     assert_out 'https://example.invalid/z.tar.xz' \
-        find_target_field "$zigm_json" x86_64-linux tarball
-    assert_fails find_target_field "$zigm_json" x86_64-linux shasum
-    assert_fails find_target_field "$zigm_json" aarch64-linux tarball
+        find_target_field "$zigm_flat" x86_64-linux tarball
+    assert_fails find_target_field "$zigm_flat" x86_64-linux shasum
+    assert_fails find_target_field "$zigm_flat" aarch64-linux tarball
 }
 
 # ---------------------------------------------------------------------------
@@ -166,7 +180,12 @@ test_find_target_field_reads_one_field() {
 test_find_release_reads_an_entry() {
     zigm_write_index "$ZIGM_TMP/index.json"
     zigm_out=$(find_release "$ZIGM_TMP/index.json" 0.15.1)
-    assert_contains "$zigm_out" '"version":"0.15.1"' 'release entry'
+
+    # The version is dropped from the front of every path, so the entry reads
+    # as a document of its own.
+    assert_contains "$zigm_out" "version${zigm_tab}0.15.1" 'the version field'
+    assert_contains "$zigm_out" \
+        "x86_64-linux${zigm_tab}shasum${zigm_tab}3333" 'a per platform field'
 }
 
 test_find_release_fails_on_an_unknown_version() {
@@ -181,17 +200,20 @@ test_find_release_fails_on_a_broken_index() {
 }
 
 test_find_release_version_prefers_the_field() {
-    assert_out 0.17.0-dev.1+abc \
-        find_release_version '{"version":"0.17.0-dev.1+abc"}' master
-    assert_out 0.15.1 find_release_version '{"version":"0.15.1"}' 0.15.1
+    assert_out 0.17.0-dev.1+abc find_release_version \
+        "$(zigm_flatten '{"version":"0.17.0-dev.1+abc"}')" master
+    assert_out 0.15.1 find_release_version \
+        "$(zigm_flatten '{"version":"0.15.1"}')" 0.15.1
 }
 
 test_find_release_version_falls_back_to_the_request() {
-    assert_out 0.13.0 find_release_version '{"date":"2024-06-07"}' 0.13.0
+    assert_out 0.13.0 find_release_version \
+        "$(zigm_flatten '{"date":"2024-06-07"}')" 0.13.0
 }
 
 test_find_release_version_needs_a_field_for_master() {
-    assert_fails find_release_version '{"date":"2026-08-16"}' master
+    assert_fails find_release_version \
+        "$(zigm_flatten '{"date":"2026-08-16"}')" master
 }
 
 # ---------------------------------------------------------------------------

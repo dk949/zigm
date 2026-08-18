@@ -17,8 +17,9 @@ and `zls` versions and exposes one of them on `PATH`.
   busybox ash, and zsh.
 * `curl` or `wget`, whichever is present.
 * `tar` with xz support, or `tar` plus a separate `xz`.
-* `jq`.
-* Typical POSIX utilities: `awk`, `grep`, `sed`, and similar.
+* Typical POSIX utilities: `awk`, `grep`, `sed`, and similar. The json both
+  upstream endpoints answer in is read with `awk`, so there is no json tool to
+  install.
 * Optional, for checksum verification: one of `sha256sum`, `shasum`, `openssl`,
   or a `cksum` that takes `-a sha256`. With none of them present zigm warns
   loudly and installs anyway.

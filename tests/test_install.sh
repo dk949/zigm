@@ -217,7 +217,7 @@ zigm_install_setup() {
     fetch_stdout() { zigm_zls_json; }
 
     # Nothing is downloaded for real, so the tests run on a machine with no
-    # curl. tar, xz, and jq are used for real, and are checked above.
+    # curl. tar and xz are used for real, and are checked above.
     require_downloader() { :; }
 }
 

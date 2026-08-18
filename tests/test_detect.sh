@@ -34,7 +34,7 @@ test_find_downloader_falls_back_to_wget() {
 }
 
 test_find_downloader_fails_without_either() {
-    ZIGM_FAKE_HAVE='tar jq'
+    ZIGM_FAKE_HAVE='tar xz'
     assert_fails find_downloader
 }
 
@@ -84,7 +84,7 @@ test_find_sha256_rejects_a_cksum_without_algorithms() {
 }
 
 test_find_sha256_fails_without_any_tool() {
-    ZIGM_FAKE_HAVE='curl tar jq'
+    ZIGM_FAKE_HAVE='curl tar xz'
     assert_fails find_sha256
 }
 
@@ -114,16 +114,6 @@ test_require_extractor_sets_the_global() {
     ZIGM_FAKE_HAVE='tar xz'
     require_extractor
     assert_eq xz "$ZIGM_XZ" 'xz method'
-}
-
-test_require_jq_dies_without_jq() {
-    ZIGM_FAKE_HAVE='curl tar xz'
-    assert_status "$ZIGM_EX_ERROR" require_jq
-}
-
-test_require_jq_accepts_jq() {
-    ZIGM_FAKE_HAVE='jq'
-    assert_ok require_jq
 }
 
 test_require_sha256_sets_the_global() {

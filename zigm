@@ -575,10 +575,6 @@ require_extractor() {
     debug "xz via: $ZIGM_XZ"
 }
 
-require_jq() {
-    have jq || die 'no jq found, install jq'
-}
-
 # Sets ZIGM_SHA256, empty when nothing is available. Missing checksum tools are
 # a loud warning rather than an error, by design.
 require_sha256() {
@@ -683,6 +679,216 @@ fetch_cached() {
 }
 
 # ---------------------------------------------------------------------------
+# JSON
+#
+# Both endpoints answer in json, and reading it is the whole of what a json
+# tool was needed for, so a small parser here replaces that dependency.
+#
+# `json_flatten` prints one line per scalar: the path to it in tab separated
+# fields, then its value in the last field. An empty object or array prints its
+# path with an empty value, so a lookup can still tell that the key is there.
+# The document
+#
+#     {"master": {"version": "0.17.0", "x86_64-linux": {"tarball": "u"}}}
+#
+# therefore flattens to
+#
+#     master<TAB>version<TAB>0.17.0
+#     master<TAB>x86_64-linux<TAB>tarball<TAB>u
+#
+# which grep and awk can read directly. The remaining helpers are the three
+# lookups the rest of the script makes over that form.
+# ---------------------------------------------------------------------------
+
+# Reads a json document on stdin, prints its scalars flattened, and returns
+# non-zero on a document it cannot read.
+#
+# Tokens never span lines, since json forbids a raw newline inside a string, so
+# each line is tokenized on its own and the tokens are parsed as one stream.
+# Only `\"`, `\\`, and `\/` are turned back into the character they stand for.
+# The rest, `\n` and `\uNNNN` among them, is passed through as written: these
+# documents hold urls, digests, dates, and version strings, and a value with no
+# escapes in it is the whole of what the callers below ever read. That also
+# keeps a tab or a newline out of a value, which the line format relies on.
+json_flatten() {
+    awk '
+        BEGIN { SEP = "\t" }
+
+        function unescape(s,   res, i, n, ch, nx) {
+            if (index(s, "\\") == 0)
+                return s
+            res = ""
+            i = 1
+            n = length(s)
+            while (i <= n) {
+                ch = substr(s, i, 1)
+                if (ch != "\\") {
+                    res = res ch
+                    i++
+                    continue
+                }
+                nx = substr(s, i + 1, 1)
+                if (nx == "\"" || nx == "\\" || nx == "/")
+                    res = res nx
+                else
+                    res = res ch nx
+                i += 2
+            }
+            return res
+        }
+
+        function push(kind, text) {
+            nt++
+            typ[nt] = kind
+            tok[nt] = text
+        }
+
+        # One line of tokens, appended to the stream the END action parses.
+        {
+            rest = $0
+            while (rest != "") {
+                if (match(rest, /^[[:space:]]+/)) {
+                    rest = substr(rest, RLENGTH + 1)
+                    continue
+                }
+                # A string ends at the first quote that is not escaped, so the
+                # body is any run of non quote non backslash characters and
+                # backslash pairs.
+                if (match(rest, /^"([^"\\]|\\.)*"/)) {
+                    push("s", unescape(substr(rest, 2, RLENGTH - 2)))
+                    rest = substr(rest, RLENGTH + 1)
+                    continue
+                }
+                head = substr(rest, 1, 1)
+                if (index("{}[]:,", head) > 0) {
+                    push(head, head)
+                    rest = substr(rest, 2)
+                    continue
+                }
+                # A number, or one of `true`, `false`, and `null`. Whichever it
+                # is, it is printed as it stands.
+                if (match(rest, /^[^][{}:,[:space:]]+/)) {
+                    push("l", substr(rest, 1, RLENGTH))
+                    rest = substr(rest, RLENGTH + 1)
+                    continue
+                }
+                bad = 1
+                exit
+            }
+        }
+
+        function emit(path, val) {
+            print path SEP val
+        }
+
+        # The depth is carried alongside the path so that the members of the
+        # top level object start a path rather than extending an empty one.
+        function value(path, d) {
+            if (typ[ti] == "{") {
+                object(path, d)
+                return
+            }
+            if (typ[ti] == "[") {
+                array(path, d)
+                return
+            }
+            if (typ[ti] == "s" || typ[ti] == "l") {
+                emit(path, tok[ti])
+                ti++
+                return
+            }
+            bad = 1
+        }
+
+        function object(path, d,   key) {
+            ti++
+            if (typ[ti] == "}") {
+                ti++
+                if (d > 0)
+                    emit(path, "")
+                return
+            }
+            for (;;) {
+                if (typ[ti] != "s") { bad = 1; return }
+                key = tok[ti]
+                ti++
+                if (typ[ti] != ":") { bad = 1; return }
+                ti++
+                value(d == 0 ? key : path SEP key, d + 1)
+                if (bad) return
+                if (typ[ti] == ",") { ti++; continue }
+                if (typ[ti] == "}") { ti++; return }
+                bad = 1
+                return
+            }
+        }
+
+        function array(path, d,   i) {
+            ti++
+            if (typ[ti] == "]") {
+                ti++
+                if (d > 0)
+                    emit(path, "")
+                return
+            }
+            i = 0
+            for (;;) {
+                value(d == 0 ? i "" : path SEP i, d + 1)
+                if (bad) return
+                i++
+                if (typ[ti] == ",") { ti++; continue }
+                if (typ[ti] == "]") { ti++; return }
+                bad = 1
+                return
+            }
+        }
+
+        END {
+            if (bad || nt == 0)
+                exit 1
+            ti = 1
+            value("", 0)
+            # Anything left over is a second document, or a stray token after
+            # the first one, and neither is something to read half of.
+            if (bad || ti != nt + 1)
+                exit 1
+        }
+    '
+}
+
+# json_has <flattened document> <key>
+#
+# True when the document carries the top level key, whatever it holds.
+json_has() {
+    printf '%s\n' "$1" | awk -F '\t' -v k="$2" '
+        $1 == k { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
+# json_field <flattened document> <key>
+#
+# Prints the value of a top level scalar. A key that is missing, holds a
+# container, or holds an empty string all count as absent, since a caller here
+# has nothing to do with any of the three.
+json_field() {
+    printf '%s\n' "$1" | awk -F '\t' -v k="$2" '
+        NF == 2 && $1 == k && $2 != "" { print $2; found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
+# json_subfield <flattened document> <key> <field>
+#
+# The same, one level down.
+json_subfield() {
+    printf '%s\n' "$1" | awk -F '\t' -v k="$2" -v f="$3" '
+        NF == 3 && $1 == k && $2 == f && $3 != "" { print $3; found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
+# ---------------------------------------------------------------------------
 # Version resolution
 #
 # The zig download index and the zls version API both key their per platform
@@ -703,13 +909,12 @@ target_candidates() {
     esac
 }
 
-# find_target <json object> <arch> <os>
+# find_target <flattened document> <arch> <os>
 #
-# Prints the first candidate key the object actually carries.
+# Prints the first candidate key the document actually carries.
 find_target() {
     for find_target_key in $(target_candidates "$2" "$3"); do
-        if printf '%s\n' "$1" |
-            jq -e --arg k "$find_target_key" 'has($k)' >/dev/null 2>&1; then
+        if json_has "$1" "$find_target_key"; then
             printf '%s\n' "$find_target_key"
             return 0
         fi
@@ -717,30 +922,40 @@ find_target() {
     return 1
 }
 
-# find_target_field <json object> <target key> <field>
+# find_target_field <flattened document> <target key> <field>
 #
 # Prints one field of a per platform build, `tarball` or `shasum`.
 find_target_field() {
-    printf '%s\n' "$1" |
-        jq -e -r --arg k "$2" --arg f "$3" '.[$k][$f] // empty' 2>/dev/null
+    json_subfield "$1" "$2" "$3"
 }
 
 # find_release <index file> <version>
 #
-# Prints the index entry for a version, `master` included, as compact json.
+# Prints the index entry for a version, `master` included, flattened. The
+# version itself is dropped from the front of every path, so the entry reads as
+# a document of its own.
 find_release() {
-    jq -e -c --arg v "$2" '.[$v] // empty' "$1" 2>/dev/null
+    [ -f "$1" ] || return 1
+
+    find_release_flat=$(json_flatten <"$1") || return 1
+
+    printf '%s\n' "$find_release_flat" | awk -F '\t' -v v="$2" '
+        $1 == v && NF >= 2 {
+            print substr($0, length($1) + 2)
+            found = 1
+        }
+        END { exit(found ? 0 : 1) }
+    '
 }
 
-# find_release_version <release json> <requested version>
+# find_release_version <flattened release> <requested version>
 #
 # Prints the concrete version of a release. `master` always carries one, and
 # tagged releases before 0.15.1 do not, but there the request is already
 # concrete. A `master` entry without one is an upstream change worth failing on
 # rather than storing a nightly under the name `master`.
 find_release_version() {
-    find_release_version_v=$(printf '%s\n' "$1" |
-        jq -e -r '.version // empty' 2>/dev/null) || find_release_version_v=''
+    find_release_version_v=$(json_field "$1" version) || find_release_version_v=''
 
     if [ -n "$find_release_version_v" ]; then
         printf '%s\n' "$find_release_version_v"
@@ -757,16 +972,47 @@ find_release_version() {
 # line, in index order. The `master` entry is printed as the concrete version it
 # names today, since that is the name it would be installed under.
 find_remote_versions() {
+    [ -f "$1" ] || return 1
+
+    find_remote_versions_flat=$(json_flatten <"$1") || return 1
     find_remote_versions_keys=$(target_candidates "$2" "$3")
 
-    jq -e -r --arg keys "$find_remote_versions_keys" '
-        ($keys | split("\n")) as $candidates
-        | to_entries[]
-        | . as $entry
-        | select($entry.value | type == "object")
-        | select(any($candidates[]; . as $key | $entry.value | has($key)))
-        | $entry.value.version // $entry.key
-    ' "$1" 2>/dev/null
+    printf '%s\n' "$find_remote_versions_flat" |
+        awk -F '\t' -v keys="$find_remote_versions_keys" '
+            BEGIN { ncand = split(keys, cand, "\n") }
+
+            # An entry is an object with contents when its paths run deeper
+            # than the entry itself. The index carries nothing else at the top
+            # level, and a scalar there would name no build anyway.
+            {
+                if (!($1 in seen)) {
+                    seen[$1] = 1
+                    order[++count] = $1
+                }
+                if (NF >= 3)
+                    object[$1] = 1
+                if (NF == 3 && $2 == "version" && $3 != "")
+                    version[$1] = $3
+                for (i = 1; i <= ncand; i++)
+                    if ($2 == cand[i])
+                        hit[$1] = 1
+            }
+
+            # An index carrying no build at all for this platform is a
+            # failure rather than an empty list, since there is nothing the
+            # caller could install from it.
+            END {
+                for (j = 1; j <= count; j++) {
+                    key = order[j]
+                    if (!(key in object) || !(key in hit))
+                        continue
+                    name = (key in version) ? version[key] : key
+                    print name
+                    found = 1
+                }
+                exit(found ? 0 : 1)
+            }
+        '
 }
 
 # normalize_query <value>
@@ -800,22 +1046,22 @@ require_index() {
 require_zig() {
     require_index
 
-    require_zig_json=$(find_release "$ZIGM_INDEX_FILE" "$1") ||
+    require_zig_flat=$(find_release "$ZIGM_INDEX_FILE" "$1") ||
         die "no zig '$1' in the download index"
 
-    ZIGM_ZIG_VERSION=$(find_release_version "$require_zig_json" "$1") ||
+    ZIGM_ZIG_VERSION=$(find_release_version "$require_zig_flat" "$1") ||
         die "the download index entry for '$1' carries no version"
 
-    ZIGM_ZIG_TARGET=$(find_target "$require_zig_json" "$ZIGM_ARCH" "$ZIGM_OS") ||
+    ZIGM_ZIG_TARGET=$(find_target "$require_zig_flat" "$ZIGM_ARCH" "$ZIGM_OS") ||
         die "zig $ZIGM_ZIG_VERSION has no build for $ZIGM_ARCH-$ZIGM_OS"
 
-    ZIGM_ZIG_TARBALL=$(find_target_field "$require_zig_json" \
+    ZIGM_ZIG_TARBALL=$(find_target_field "$require_zig_flat" \
         "$ZIGM_ZIG_TARGET" tarball) ||
         die "zig $ZIGM_ZIG_VERSION has no tarball for $ZIGM_ZIG_TARGET"
 
     # An entry without one is rare but real, and checksum verification is a
     # warning rather than an error, so an empty shasum is not fatal here.
-    ZIGM_ZIG_SHASUM=$(find_target_field "$require_zig_json" \
+    ZIGM_ZIG_SHASUM=$(find_target_field "$require_zig_flat" \
         "$ZIGM_ZIG_TARGET" shasum) || ZIGM_ZIG_SHASUM=''
 
     debug "zig $ZIGM_ZIG_VERSION ($ZIGM_ZIG_TARGET): $ZIGM_ZIG_TARBALL"
@@ -832,24 +1078,26 @@ require_zls() {
     require_zls_json=$(fetch_stdout "$(zls_url "$1")") ||
         die "cannot reach the zls version API"
 
+    require_zls_flat=$(printf '%s\n' "$require_zls_json" | json_flatten) ||
+        die "cannot read the reply from the zls version API"
+
     # The API reports a missing or unreleased pairing as a json error object
     # rather than as an http status.
-    require_zls_msg=$(printf '%s\n' "$require_zls_json" |
-        jq -e -r '.message // empty' 2>/dev/null) || require_zls_msg=''
+    require_zls_msg=$(json_field "$require_zls_flat" message) ||
+        require_zls_msg=''
     [ -z "$require_zls_msg" ] || die "no zls for zig $1: $require_zls_msg"
 
-    ZIGM_ZLS_VERSION=$(printf '%s\n' "$require_zls_json" |
-        jq -e -r '.version // empty' 2>/dev/null) ||
+    ZIGM_ZLS_VERSION=$(json_field "$require_zls_flat" version) ||
         die "the zls version API named no version for zig $1"
 
-    ZIGM_ZLS_TARGET=$(find_target "$require_zls_json" "$ZIGM_ARCH" "$ZIGM_OS") ||
+    ZIGM_ZLS_TARGET=$(find_target "$require_zls_flat" "$ZIGM_ARCH" "$ZIGM_OS") ||
         die "zls $ZIGM_ZLS_VERSION has no build for $ZIGM_ARCH-$ZIGM_OS"
 
-    ZIGM_ZLS_TARBALL=$(find_target_field "$require_zls_json" \
+    ZIGM_ZLS_TARBALL=$(find_target_field "$require_zls_flat" \
         "$ZIGM_ZLS_TARGET" tarball) ||
         die "zls $ZIGM_ZLS_VERSION has no tarball for $ZIGM_ZLS_TARGET"
 
-    ZIGM_ZLS_SHASUM=$(find_target_field "$require_zls_json" \
+    ZIGM_ZLS_SHASUM=$(find_target_field "$require_zls_flat" \
         "$ZIGM_ZLS_TARGET" shasum) || ZIGM_ZLS_SHASUM=''
 
     debug "zls $ZIGM_ZLS_VERSION ($ZIGM_ZLS_TARGET): $ZIGM_ZLS_TARBALL"
@@ -1387,7 +1635,6 @@ cmd_install() {
 
     require_downloader
     require_extractor
-    require_jq
     require_sha256
     ensure_dirs
     require_lock
@@ -1472,7 +1719,6 @@ cmd_list() {
 cmd_list_remote() {
     [ "$#" -eq 0 ] || die_usage 'list-remote takes no arguments'
     require_downloader
-    require_jq
     require_index
 
     # The nightly is listed under the version it resolves to today, so it needs
@@ -1676,7 +1922,6 @@ cmd_update() {
 
     require_downloader
     require_extractor
-    require_jq
     require_sha256
     ensure_dirs
     require_lock

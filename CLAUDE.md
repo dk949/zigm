@@ -31,8 +31,11 @@ These were settled with the user. Do not silently revise them.
 * Required external tools, hard error if missing:
   * `curl` or `wget`, detected at runtime
   * `tar` with `xz` support, or `tar` plus a separate `xz`
-  * `jq`, accepted as a deliberate exception to the zero dependency goal
   * Typical POSIX utilities: `awk`, `grep`, `sed`, and similar
+* The json both upstream endpoints answer in is read by an `awk` parser in the
+  script, `json_flatten`, which prints one line per scalar: the path to it in
+  tab separated fields, then its value in the last field. There is no json tool
+  dependency.
 * Checksum verification uses whichever of `sha256sum`, `shasum`, `openssl`, or
   `cksum -a` is present. If none is found, emit a loud warning and continue.
 * Signature verification (minisign) is deferred, not rejected.
@@ -54,8 +57,8 @@ These were settled with the user. Do not silently revise them.
   * Darwin: `~/Library/Application Support/zigm`, `~/Library/Caches/zigm`
 * Subcommands for v1: `install`, `use`, `uninstall`, `list`, `list-remote`,
   `which`, `current`, `update`, `clean`.
-* Deferred: version aliases and a config file. Since `jq` is already required, a
-  JSON config is acceptable when that lands.
+* Deferred: version aliases and a config file. A config format simpler than
+  json is preferred, since nothing else needs a json writer.
 
 ## Working rules
 

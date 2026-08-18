@@ -3,7 +3,7 @@
 # End to end tests: these run the script as a program under the shell being
 # tested, in a scratch HOME with the directory overrides pointed at scratch
 # space. Only commands that need no external tools are exercised here, so the
-# results do not depend on curl or jq being installed.
+# results do not depend on curl being installed.
 
 # shellcheck source-path=SCRIPTDIR
 . "$(dirname -- "$0")/lib.sh"
@@ -115,7 +115,7 @@ test_wrong_argument_counts_are_usage_errors() {
 }
 
 test_argument_count_is_checked_before_dependencies() {
-    # install checks its arguments first, so a machine without curl or jq still
+    # install checks its arguments first, so a machine without curl still
     # gets the usage error rather than a missing tool error.
     assert_status "$ZIGM_EX_USAGE" zigm_run install
 }

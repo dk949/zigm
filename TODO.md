@@ -18,6 +18,7 @@
         - `xz` as a separate binary is preferred, since detecting xz support
           inside `tar` can only be done by grepping its help output.
     - [X] `jq`.
+        - Removed again once the parser below replaced it.
 - [X] Detect a sha256 tool, warn loudly when none is available.
 - [X] Set up a test harness that sources `zigm` with `ZIGM_LIB=1`.
     - [X] Keep new functions split into pure `find_*` and `normalize_*` helpers
@@ -271,11 +272,47 @@
           the subject it runs.
         - INT was not checked the same way, since a shell ignores it in a job
           it backgrounded, and it shares its handler with the other two.
-- [ ] Investigate whether `sed` alone can replace `jq`, dropping the last hard
+- [X] Investigate whether `sed` alone can replace `jq`, dropping the last hard
       dependency.
-    - [ ] Move config to a simpler to read and write format like `conf`.
+    - Settled: `awk` rather than `sed`, since a parser needs to hold a token
+      stream and `sed` would only work by leaning on the layout upstream
+      happens to print today.
+    - [X] `json_flatten` reads a document on stdin and prints one line per
+          scalar: the path to it in tab separated fields, then its value in the
+          last field, which grep and awk read directly.
+        - Tokens never span lines, since json forbids a raw newline inside a
+          string, so each line is tokenized on its own and the tokens are
+          parsed as one stream in the END action.
+        - An empty object or array prints its path with an empty value, so a
+          lookup can still tell that the key is there, which is the whole of
+          what `find_target` asks.
+        - Only `\"`, `\\`, and `\/` are turned back into the character they
+          stand for, which keeps a tab or a newline out of a value and so out
+          of the line format. The rest is passed through as written, since
+          these documents hold urls, digests, dates, and version strings.
+    - [X] `json_has`, `json_field`, and `json_subfield` are the three lookups
+          the rest of the script makes over that form.
+    - [X] `find_release` and `find_remote_versions` flatten the index, and
+          everything downstream of them takes the flattened form rather than
+          json.
+        - `find_remote_versions` reads an entry as an object when its paths run
+          deeper than the entry itself, which is what `jq`'s type test did.
+    - [X] Checked against the real download index, where the output matches
+          `jq` line for line, and under `gawk` in both its posix and its
+          traditional mode.
+        - The ubuntu runners use mawk and the macos ones the one true awk, so
+          CI covers the two implementations that are not gawk.
+    - [X] `tests/test_json.sh` covers the parser and the three lookups, and the
+          resolution tests now flatten their json fixtures before feeding them
+          to a lookup.
+    - [X] Drop `require_jq`, and with it the only thing `install`, `update`,
+          and `list-remote` checked for that a POSIX system would not already
+          have.
 - [ ] Version aliases, deferred.
 - [ ] Config file, deferred.
+    - [ ] Use a format simpler to read and write than json, like
+          `conf`, since nothing in the script writes json and the
+          parser above only reads it.
 - [ ] Minisign signature verification, deferred.
 - [X] `env` sub-command to unify the environment output of `zig env`
     - Prints output of current `zig env` in JSON
