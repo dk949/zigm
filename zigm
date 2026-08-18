@@ -975,11 +975,14 @@ find_remote_versions() {
     [ -f "$1" ] || return 1
 
     find_remote_versions_flat=$(json_flatten <"$1") || return 1
-    find_remote_versions_keys=$(target_candidates "$2" "$3")
+
+    # The candidates go in space separated rather than one per line, since a
+    # newline in an `awk -v` value is a syntax error in the awk macos ships.
+    find_remote_versions_keys=$(target_candidates "$2" "$3" | tr '\n' ' ')
 
     printf '%s\n' "$find_remote_versions_flat" |
         awk -F '\t' -v keys="$find_remote_versions_keys" '
-            BEGIN { ncand = split(keys, cand, "\n") }
+            BEGIN { ncand = split(keys, cand, " ") }
 
             # An entry is an object with contents when its paths run deeper
             # than the entry itself. The index carries nothing else at the top
